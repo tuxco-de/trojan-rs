@@ -2,7 +2,7 @@ use tokio_rustls::rustls::{
     crypto::ring::DEFAULT_CIPHER_SUITES, CipherSuite, SupportedCipherSuite,
 };
 use rustls_pki_types::{CertificateDer, PrivateKeyDer};
-use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
+use rustls_pemfile::certs;
 
 use crate::error::Error;
 use std::{
@@ -32,13 +32,8 @@ pub fn load_cert(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
 
 pub fn load_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
     let mut reader = BufReader::new(File::open(path)?);
-    if let Some(k) = pkcs8_private_keys(&mut reader).flatten().next() {
-        return Ok(PrivateKeyDer::Pkcs8(k.clone_key()));
-    }
-    
-    let mut reader = BufReader::new(File::open(path)?);
-    if let Some(k) = rsa_private_keys(&mut reader).flatten().next() {
-        return Ok(PrivateKeyDer::Pkcs1(k.clone_key()));
+    if let Some(key) = rustls_pemfile::private_key(&mut reader)? {
+        return Ok(key);
     }
     Err(new_error("no valid key found"))
 }
