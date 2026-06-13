@@ -388,6 +388,83 @@ uninstall() {
     fi
 }
 
+share_node() {
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        echo -e "${RED}未找到配置文件 ${CONFIG_FILE}，请先执行安装。${PLAIN}"
+        return
+    fi
+
+    local PORT
+    PORT=$(grep -E '^\s*addr\s*=' "${CONFIG_FILE}" | awk -F':' '{print $NF}' | tr -d '", ')
+    local WSPATH
+    WSPATH=$(grep -E '^\s*path\s*=' "${CONFIG_FILE}" | awk -F'=' '{print $2}' | tr -d '", ')
+
+    local TYPE
+    local PASSWORD=""
+    local UUID=""
+
+    if grep -q '\[vless\]' "${CONFIG_FILE}"; then
+        TYPE="vless"
+        UUID=$(grep -E '^\s*users\s*=' "${CONFIG_FILE}" | grep -oE '[0-9a-fA-F-]{36}')
+    elif grep -q '\[trojan\]' "${CONFIG_FILE}"; then
+        TYPE="trojan"
+        PASSWORD=$(grep -E '^\s*password\s*=' "${CONFIG_FILE}" | awk -F'=' '{print $2}' | tr -d '", ')
+    else
+        echo -e "${RED}无法识别配置中的协议类型。${PLAIN}"
+        return
+    fi
+
+    read -rp "请输入该节点绑定的域名 (用于客户端连接，如 example.com): " NODE_DOMAIN
+    if [ -z "$NODE_DOMAIN" ]; then
+        echo -e "${RED}域名不能为空！${PLAIN}"
+        return
+    fi
+
+    echo -e "\n${GREEN}========== Clash 节点配置 (JSON 格式) ==========${PLAIN}"
+    if [ "$TYPE" == "vless" ]; then
+        cat <<EOF
+{
+  "name": "trojan-rs-vless",
+  "type": "vless",
+  "server": "${NODE_DOMAIN}",
+  "port": ${PORT},
+  "uuid": "${UUID}",
+  "network": "ws",
+  "tls": true,
+  "udp": true,
+  "sni": "${NODE_DOMAIN}",
+  "client-fingerprint": "chrome",
+  "ws-opts": {
+    "path": "${WSPATH}",
+    "headers": {
+      "Host": "${NODE_DOMAIN}"
+    }
+  }
+}
+EOF
+    else
+        cat <<EOF
+{
+  "name": "trojan-rs-trojan",
+  "type": "trojan",
+  "server": "${NODE_DOMAIN}",
+  "port": ${PORT},
+  "password": "${PASSWORD}",
+  "network": "ws",
+  "sni": "${NODE_DOMAIN}",
+  "udp": true,
+  "ws-opts": {
+    "path": "${WSPATH}",
+    "headers": {
+      "Host": "${NODE_DOMAIN}"
+    }
+  }
+}
+EOF
+    fi
+    echo -e "${GREEN}================================================${PLAIN}\n"
+}
+
 menu() {
     while true; do
         echo ""
@@ -399,15 +476,17 @@ menu() {
         echo "3. 服务管理 (启动/停止/重启)"
         echo "4. 查看实时运行日志"
         echo "5. 彻底卸载"
+        echo "6. 生成 Clash 节点配置 (JSON)"
         echo "0. 退出脚本"
         echo -e "=================================="
-        read -rp "请输入选择 [0-5]: " CHOICE
+        read -rp "请输入选择 [0-6]: " CHOICE
         case "${CHOICE}" in
             1) install ;;
             2) change_config ;;
             3) manage_service ;;
             4) view_logs ;;
             5) uninstall ;;
+            6) share_node ;;
             0) exit 0 ;;
             *) echo -e "${RED}输入无效，请重新输入。${PLAIN}" ;;
         esac
