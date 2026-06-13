@@ -7,6 +7,7 @@ use log::LevelFilter;
 use crate::{
     error::Error,
     protocol::{
+        camouflage::CamouflageAcceptor,
         direct::connector::DirectConnector,
         mux::{
             acceptor::MuxAcceptor,
@@ -66,10 +67,16 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             let config: ServerConfig = toml::from_str(&config_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let direct_connector = DirectConnector {};
             let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
+            let websocket_path = config.websocket.as_ref().map(|websocket| websocket.path());
+            let camouflage_acceptor = CamouflageAcceptor::new(
+                config.camouflage.as_ref(),
+                websocket_path,
+                tls_acceptor,
+            )?;
             match (config.trojan, config.vless) {
                 (Some(trojan), None) => {
                     if let Some(websocket) = config.websocket {
-                        let ws_acceptor = WebSocketAcceptor::new(&websocket, tls_acceptor)?;
+                        let ws_acceptor = WebSocketAcceptor::new(&websocket, camouflage_acceptor)?;
                         let trojan_acceptor = TrojanAcceptor::new(&trojan, ws_acceptor)?;
                         if let Some(mux) = config.mux {
                             let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
@@ -78,7 +85,7 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
                             run_proxy(trojan_acceptor, direct_connector).await?;
                         }
                     } else {
-                        let trojan_acceptor = TrojanAcceptor::new(&trojan, tls_acceptor)?;
+                        let trojan_acceptor = TrojanAcceptor::new(&trojan, camouflage_acceptor)?;
                         if let Some(mux) = config.mux {
                             let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
                             run_proxy(mux_acceptor, direct_connector).await?;
@@ -97,7 +104,7 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
                             "VLESS server requires [websocket]",
                         )
                     })?;
-                    let ws_acceptor = WebSocketAcceptor::new_strict(&websocket, tls_acceptor)?;
+                    let ws_acceptor = WebSocketAcceptor::new_strict(&websocket, camouflage_acceptor)?;
                     let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
                     run_proxy(vless_acceptor, direct_connector).await?;
                 }

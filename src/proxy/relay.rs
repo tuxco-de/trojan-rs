@@ -31,7 +31,7 @@ async fn copy_tcp<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         if len == 0 {
             break;
         }
-        w.write(&buf[..len]).await?;
+        w.write_all(&buf[..len]).await?;
         w.flush().await?;
     }
     Ok(())
@@ -103,7 +103,7 @@ pub async fn run_proxy<I: ProxyAcceptor, O: ProxyConnector + 'static>(
                             relay_udp(inbound, outbound).await;
                         }
                         Err(e) => {
-                            log::error!("failed to relay udp stream: {}", e.to_string());
+                            log::error!("failed to relay udp stream: {}", e);
                         }
                     }
                 });

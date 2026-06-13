@@ -19,7 +19,7 @@ pub struct TrojanConnector<T: ProxyConnector> {
 
 impl<T: ProxyConnector> TrojanConnector<T> {
     pub fn new(config: &TrojanConnectorConfig, inner: T) -> io::Result<Self> {
-        if config.password.len() < 1 {
+        if config.password.is_empty() {
             return Err(new_error("no valid password found"));
         }
         let mut hash = [0u8; HASH_STR_LEN];
@@ -37,7 +37,7 @@ impl<T: ProxyConnector> ProxyConnector for TrojanConnector<T> {
 
     async fn connect_tcp(&self, addr: &Address) -> io::Result<Self::TS> {
         let mut stream = self.inner.connect_tcp(addr).await?;
-        let header = RequestHeader::TcpConnect(self.hash.clone(), addr.clone());
+        let header = RequestHeader::TcpConnect(self.hash, addr.clone());
         header.write_to(&mut stream).await?;
         Ok(stream)
     }
@@ -45,7 +45,7 @@ impl<T: ProxyConnector> ProxyConnector for TrojanConnector<T> {
     async fn connect_udp(&self) -> io::Result<Self::US> {
         let udp_dummy_addr = Address::new_dummy_address();
         let mut stream = self.inner.connect_tcp(&udp_dummy_addr).await?;
-        let header = RequestHeader::UdpAssociate(self.hash.clone());
+        let header = RequestHeader::UdpAssociate(self.hash);
         header.write_to(&mut stream).await?;
         Ok(TrojanUdpStream::new(stream))
     }

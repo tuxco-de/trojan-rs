@@ -16,6 +16,12 @@ sni = "example.com"
 cert = "cert.pem"
 key = "key.pem"
 
+# optional: serve a static page for ordinary HTTPS requests and invalid WS paths
+# [camouflage]
+# page = "config/camouflage.html"
+# request_timeout_secs = 10
+# max_request_size = 8192
+
 # optional
 # [plaintext]
 # addr = "127.0.0.1:12345"

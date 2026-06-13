@@ -66,6 +66,12 @@ pub struct WebSocketAcceptorConfig {
     max_write_buffer_size: usize,
 }
 
+impl WebSocketAcceptorConfig {
+    pub(crate) fn path(&self) -> &str {
+        &self.path
+    }
+}
+
 struct WebSocketCallback {
     path: String,
 }

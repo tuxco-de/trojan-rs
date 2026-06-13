@@ -4,6 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::Error;
 
+pub mod camouflage;
 pub mod direct;
 pub mod mux;
 pub mod socks5;
@@ -13,7 +14,7 @@ pub mod vless;
 pub mod websocket;
 
 pub fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("protocol: {}", message.to_string())).into();
+    Error::new(format!("protocol: {}", message.to_string())).into()
 }
 
 pub trait ProxyTcpStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}

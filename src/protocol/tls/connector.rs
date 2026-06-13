@@ -72,7 +72,7 @@ impl TrojanTlsConnector {
 
         let builder = ClientConfig::builder_with_provider(Arc::new(provider))
             .with_safe_default_protocol_versions()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+            .map_err(|e| io::Error::other(e.to_string()))?;
 
         let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
 

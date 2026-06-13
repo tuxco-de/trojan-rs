@@ -70,7 +70,7 @@ impl MuxAcceptor {
                                 }
                             };
                             if !valid_magic_addr {
-                                log::error!("invalid mux magic address {}", addr.to_string());
+                                log::error!("invalid mux magic address {}", addr);
                                 return Err(ErrorKind::InvalidData.into());
                             }
                             log::debug!("new inbound stream for mux");

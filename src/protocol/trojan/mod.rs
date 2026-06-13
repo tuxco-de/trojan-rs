@@ -13,12 +13,12 @@ pub mod connector;
 const HASH_STR_LEN: usize = 56;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("trojan: {}", message.to_string())).into();
+    Error::new(format!("trojan: {}", message.to_string())).into()
 }
 
 fn password_to_hash<T: ToString>(s: T) -> String {
     let mut hasher = Sha224::new();
-    hasher.update(&s.to_string().into_bytes());
+    hasher.update(s.to_string().into_bytes());
     let h = hasher.finalize();
     let mut s = String::with_capacity(HASH_STR_LEN);
     for i in h {
@@ -137,7 +137,7 @@ impl RequestHeader {
         addr.write_to_buf(cursor);
         cursor.put_slice(crlf);
 
-        w.write(&buf).await?;
+        w.write_all(&buf).await?;
         Ok(())
     }
 }
@@ -188,7 +188,7 @@ impl UdpHeader {
         self.address.write_to_buf(cursor);
         cursor.put_u16(self.payload_len);
         cursor.put_slice(b"\r\n");
-        w.write(&buf).await?;
+        w.write_all(&buf).await?;
         Ok(())
     }
 }
@@ -217,7 +217,7 @@ impl<T: AsyncWrite + Unpin + Send + Sync> UdpWrite for TrojanUdpWriter<T> {
     async fn write_to(&mut self, buf: &[u8], addr: &Address) -> io::Result<()> {
         let header = UdpHeader::new(addr, buf.len());
         header.write_to(&mut self.inner).await?;
-        self.inner.write(buf).await?;
+        self.inner.write_all(buf).await?;
         Ok(())
     }
 }

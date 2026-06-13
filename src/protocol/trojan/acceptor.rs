@@ -49,7 +49,7 @@ impl<T: ProxyAcceptor> ProxyAcceptor for TrojanAcceptor<T> {
                     let _ = outbound.write(&first_packet).await;
                     relay_tcp(inbound, outbound).await;
                 });
-                Err(new_error(format!("invalid packet: {}", e.to_string())))
+                Err(new_error(format!("invalid packet: {}", e)))
             }
         }
     }

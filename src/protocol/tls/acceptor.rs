@@ -47,8 +47,8 @@ impl TrojanTlsAcceptor {
 
         let cert_path = Path::new(&config.cert);
         let key_path = Path::new(&config.key);
-        let certs = load_cert(&cert_path)?;
-        let key = load_key(&key_path)?;
+        let certs = load_cert(cert_path)?;
+        let key = load_key(key_path)?;
 
         let cipher_suites = get_cipher_suite(config.cipher.clone())?;
         let mut provider = tokio_rustls::rustls::crypto::ring::default_provider();
@@ -59,7 +59,7 @@ impl TrojanTlsAcceptor {
             .map_err(|e| new_error(format!("tls version error {}", e)))?
             .with_no_client_auth()
             .with_single_cert(certs, key)
-            .map_err(|e| new_error(format!("invalid cert {}", e.to_string())))?;
+            .map_err(|e| new_error(format!("invalid cert {}", e)))?;
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
         Ok(Self {

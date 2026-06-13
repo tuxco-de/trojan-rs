@@ -32,17 +32,13 @@ pub fn load_cert(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {
 
 pub fn load_key(path: &Path) -> io::Result<PrivateKeyDer<'static>> {
     let mut reader = BufReader::new(File::open(path)?);
-    for key in pkcs8_private_keys(&mut reader) {
-        if let Ok(k) = key {
-            return Ok(PrivateKeyDer::Pkcs8(k.clone_key()));
-        }
+    if let Some(k) = pkcs8_private_keys(&mut reader).flatten().next() {
+        return Ok(PrivateKeyDer::Pkcs8(k.clone_key()));
     }
     
     let mut reader = BufReader::new(File::open(path)?);
-    for key in rsa_private_keys(&mut reader) {
-        if let Ok(k) = key {
-            return Ok(PrivateKeyDer::Pkcs1(k.clone_key()));
-        }
+    if let Some(k) = rsa_private_keys(&mut reader).flatten().next() {
+        return Ok(PrivateKeyDer::Pkcs1(k.clone_key()));
     }
     Err(new_error("no valid key found"))
 }
@@ -83,7 +79,7 @@ pub fn get_cipher_suite(cipher: Option<Vec<String>>) -> io::Result<Vec<Supported
 
     for name in cipher {
         let mut found = false;
-        for i in DEFAULT_CIPHER_SUITES.to_vec() {
+        for i in DEFAULT_CIPHER_SUITES.iter().copied() {
             if name == get_cipher_name(i) {
                 result.push(i);
                 found = true;

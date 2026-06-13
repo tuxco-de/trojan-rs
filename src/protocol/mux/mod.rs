@@ -35,7 +35,7 @@ pub mod acceptor;
 pub mod connector;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("mux: {}", message.to_string())).into();
+    Error::new(format!("mux: {}", message.to_string())).into()
 }
 
 const SMUX_VERSION: u8 = 1;
@@ -164,8 +164,7 @@ impl MuxFrame {
             CMD_NOP => MuxFrame::Nop(NopFrame { stream_id }),
             CMD_SYNC => MuxFrame::Sync(SyncFrame { stream_id }),
             CMD_PUSH => {
-                let mut buf = Vec::with_capacity(length as usize);
-                buf.resize(length as usize, 0);
+                let mut buf = vec![0; length as usize];
                 reader.read_exact(&mut buf).await?;
                 MuxFrame::Push(PushFrame {
                     stream_id,
@@ -322,7 +321,7 @@ impl AsyncWrite for MuxStream {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
-        return Poll::Ready(Ok(()));
+        Poll::Ready(Ok(()))
     }
 
     fn poll_shutdown(
@@ -387,7 +386,7 @@ impl AsyncWrite for MuxStream {
                 TrySendError::Closed(_) => {}
             }
         }
-        return Poll::Ready(Ok(()));
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -664,8 +663,8 @@ impl MuxHandle {
 
     async fn generate_stream_id(&self) -> u32 {
         let mux_map = self.mux_map.lock().await;
-        let stream_id = new_key(&mux_map, &self.stream_id_hint);
-        stream_id
+        
+        new_key(&mux_map, &self.stream_id_hint)
     }
 
     async fn connect(&self) -> io::Result<MuxStream> {
@@ -711,7 +710,7 @@ impl MuxHandle {
         self.write_handle.abort();
 
         let mut mux_map = self.mux_map.lock().await;
-        for (_, stream_handle) in mux_map.iter() {
+        for stream_handle in mux_map.values() {
             stream_handle.close();
         }
         mux_map.clear();

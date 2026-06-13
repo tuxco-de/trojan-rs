@@ -27,8 +27,7 @@ pub struct AddressError {
 
 impl From<AddressError> for io::Error {
     fn from(e: AddressError) -> Self {
-        io::Error::new(
-            io::ErrorKind::Other,
+        io::Error::other(
             format!("address error: {}", e.message),
         )
     }
@@ -181,7 +180,7 @@ impl Address {
                 cur.copy_to_slice(&mut domain_name);
                 let port = cur.get_u16();
                 let domain_name = String::from_utf8(domain_name).map_err(|e| {
-                    new_error(format!("invalid utf8 domain name {}", e.to_string()))
+                    new_error(format!("invalid utf8 domain name {}", e))
                 })?;
                 Ok(Address::DomainNameAddress(domain_name, port))
             }
@@ -225,7 +224,7 @@ impl Address {
             Self::DomainNameAddress(domain_name, port) => {
                 buf.put_u8(Self::ADDR_TYPE_DOMAIN_NAME);
                 buf.put_u8(domain_name.len() as u8);
-                buf.put_slice(&domain_name.as_bytes()[..]);
+                buf.put_slice(domain_name.as_bytes());
                 buf.put_u16(*port);
             }
         }
