@@ -961,6 +961,7 @@ dependencies = [
  "env_logger",
  "futures-core",
  "futures-util",
+ "httparse",
  "log",
  "rustls-pemfile",
  "rustls-pki-types",
