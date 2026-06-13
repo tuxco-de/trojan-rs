@@ -85,8 +85,8 @@ download_bin() {
     echo -e "${GREEN}正在获取最新的 trojan-rs 版本...${PLAIN}"
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64) ASSET_KEYWORD="linux-amd64" ;;
-        aarch64) ASSET_KEYWORD="linux-arm64" ;; # 若您编译了 arm64
+        x86_64) ASSET_KEYWORD="server-linux-amd64" ;;
+        aarch64) ASSET_KEYWORD="server-linux-arm64" ;; # 若您编译了 arm64
         *) echo -e "${RED}不支持的架构: $ARCH${PLAIN}"; exit 1 ;;
     esac
 
@@ -106,8 +106,12 @@ download_bin() {
     tar -xzf trojan-rs.tar.gz -C ${INSTALL_DIR}
     rm -f trojan-rs.tar.gz
 
-    # 由于打包出来的二进制可能叫 trojan-rs 或 trojan-r，统一重命名为 trojan-rs
-    if [ -f "${INSTALL_DIR}/trojan-r" ]; then
+    if [ -f "${INSTALL_DIR}/trojan-rs-server" ]; then
+        mv ${INSTALL_DIR}/trojan-rs-server ${BIN_FILE}
+    elif [ -f "${INSTALL_DIR}/trojan-rs" ]; then
+        # fallback if old tarball
+        mv ${INSTALL_DIR}/trojan-rs ${BIN_FILE}
+    elif [ -f "${INSTALL_DIR}/trojan-r" ]; then
         mv ${INSTALL_DIR}/trojan-r ${BIN_FILE}
     fi
     chmod +x ${BIN_FILE}
