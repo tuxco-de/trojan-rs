@@ -5,6 +5,11 @@ log_level = "debug" # optional
 password = "password"
 fallback_addr = "127.0.0.1:80"
 
+# Use [vless] instead of [trojan] to enable VLESS over WSS.
+# [vless]
+# users = ["d342d11e-d424-4583-b36e-524ab1f0afa4"]
+# handshake_timeout_secs = 10
+
 [tls]
 addr = "0.0.0.0:443"
 sni = "example.com"

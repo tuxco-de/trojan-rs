@@ -9,6 +9,7 @@ pub mod mux;
 pub mod socks5;
 pub mod tls;
 pub mod trojan;
+pub mod vless;
 pub mod websocket;
 
 pub fn new_error<T: ToString>(message: T) -> io::Error {

@@ -13,6 +13,7 @@ use crate::protocol::{
         acceptor::TrojanAcceptorConfig,
         connector::TrojanConnectorConfig,
     },
+    vless::acceptor::VlessAcceptorConfig,
     websocket::{
         acceptor::WebSocketAcceptorConfig,
         connector::WebSocketConnectorConfig,
@@ -36,7 +37,8 @@ pub struct ClientConfig {
 
 #[derive(Deserialize)]
 pub struct ServerConfig {
-    pub trojan: TrojanAcceptorConfig,
+    pub trojan: Option<TrojanAcceptorConfig>,
+    pub vless: Option<VlessAcceptorConfig>,
     pub tls: TrojanTlsAcceptorConfig,
     pub websocket: Option<WebSocketAcceptorConfig>,
     pub mux: Option<MuxAcceptorConfig>,

@@ -199,6 +199,7 @@ pub struct WebSocketAcceptor<T: ProxyAcceptor> {
     handshake_timeout: Duration,
     max_handshake_size: usize,
     websocket_config: WebSocketConfig,
+    allow_raw: bool,
     inner: T,
 }
 
@@ -219,6 +220,9 @@ impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
         let is_websocket = is_trojan_go_websocket_request(&request_head, &self.path);
         let prefixed = PrefixedStream::new(request_head, stream);
         if !is_websocket {
+            if !self.allow_raw {
+                return Err(new_error("websocket upgrade required"));
+            }
             return Ok(AcceptResult::Tcp((
                 TrojanGoWebSocketStream::Raw(prefixed),
                 addr,
@@ -247,6 +251,18 @@ impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
 
 impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
     pub fn new(config: &WebSocketAcceptorConfig, inner: T) -> io::Result<Self> {
+        Self::new_with_raw_fallback(config, inner, true)
+    }
+
+    pub fn new_strict(config: &WebSocketAcceptorConfig, inner: T) -> io::Result<Self> {
+        Self::new_with_raw_fallback(config, inner, false)
+    }
+
+    fn new_with_raw_fallback(
+        config: &WebSocketAcceptorConfig,
+        inner: T,
+        allow_raw: bool,
+    ) -> io::Result<Self> {
         validate_config(config)?;
         let websocket_config = WebSocketConfig::default()
             .read_buffer_size(config.read_buffer_size)
@@ -260,6 +276,7 @@ impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
             handshake_timeout: Duration::from_secs(config.handshake_timeout_secs),
             max_handshake_size: config.max_handshake_size,
             websocket_config,
+            allow_raw,
         })
     }
 }
