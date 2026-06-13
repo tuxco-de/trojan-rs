@@ -78,7 +78,21 @@
 
 ## 部署和使用
 
-`Trojan-R` 使用 toml 进行配置，参考 `config` 文件夹下配置文件。
+### 服务端一键部署 (推荐)
+
+我们为 Linux 服务端提供了一个全自动的交互式一键部署与管理脚本，支持自动化安装 Trojan+WSS 或 VLESS+WSS 协议、利用 acme.sh 自动申请 TLS 证书、配置系统级守护进程并提供运行日志查看。
+
+在支持的系统环境 (Ubuntu / Debian / CentOS) 上，您只需执行以下命令即可：
+
+```shell
+wget https://raw.githubusercontent.com/tuxco-de/trojan-rs/main/scripts/install.sh
+chmod +x install.sh
+sudo ./install.sh
+```
+
+### 手动部署与客户端使用
+
+`Trojan-R` 核心程序原生使用 TOML 格式进行配置。如需手动部署服务端或运行客户端程序，请参考项目仓库 `config` 文件夹下的配置文件模板示例。
 
 ## 编译
 
@@ -98,7 +112,7 @@ make armv7-unknown-linux-musleabihf
 
 ## TODOs
 
-- [ ] 更完善的交互接口和文档
+- [x] 更完善的交互接口和文档
 
 - [ ] 更多的单元测试和集成测试
 
@@ -110,7 +124,7 @@ make armv7-unknown-linux-musleabihf
 
 - [x] 分离客户端和服务端 features
 
-- [ ] Github Actions
+- [x] Github Actions 跨平台持续集成与全自动构建发布
 
 ## 致谢
 
