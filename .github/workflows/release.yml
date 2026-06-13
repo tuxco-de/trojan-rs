@@ -19,19 +19,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: trojan-rs
-            asset_name: trojan-rs-linux-amd64
+            asset_suffix: linux-amd64
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: trojan-rs
-            asset_name: trojan-rs-darwin-amd64
+            asset_suffix: darwin-amd64
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: trojan-rs
-            asset_name: trojan-rs-darwin-arm64
+            asset_suffix: darwin-arm64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: trojan-rs.exe
-            asset_name: trojan-rs-windows-amd64.exe
+            asset_suffix: windows-amd64
 
     steps:
       - name: Checkout repository
@@ -48,21 +48,42 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y musl-tools
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build client binary
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features client
 
-      - name: Rename and compress binary (Unix)
+      - name: Rename client binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-client
+
+      - name: Rename client binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-client.exe
+
+      - name: Build server binary
+        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features server
+
+      - name: Rename server binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-server
+
+      - name: Rename server binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-server.exe
+
+      - name: Compress binaries (Unix)
         if: matrix.os != 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../${{ matrix.asset_name }}.tar.gz ${{ matrix.artifact_name }}
+          tar -czvf ../../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+          tar -czvf ../../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
           cd ../../..
 
-      - name: Rename and compress binary (Windows)
+      - name: Compress binaries (Windows)
         if: matrix.os == 'windows-latest'
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path ${{ matrix.artifact_name }} -DestinationPath ../../../${{ matrix.asset_name }}.zip
+          Compress-Archive -Path trojan-rs-client.exe -DestinationPath ../../../trojan-rs-client-${{ matrix.asset_suffix }}.zip
+          Compress-Archive -Path trojan-rs-server.exe -DestinationPath ../../../trojan-rs-server-${{ matrix.asset_suffix }}.zip
           cd ../../..
 
       - name: Upload binaries to release
