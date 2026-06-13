@@ -36,6 +36,8 @@
 
     `Trojan-R` 使用 TLS 建立代理隧道，难以从正常 TLS 流量中被区分。支持协议回落，在遭到主动探测时将与普通 TLS 服务器表现一致。
 
+    客户端支持 uTLS 风格的 ClientHello 指纹模拟。在 `[tls]` 配置中设置 `fingerprint = "chrome"` 即可启用；当前支持 `chrome`、`chrome_108`、`firefox` 和 `safari`。启用后浏览器指纹会接管密码套件顺序，因此 `cipher` 配置将被忽略。
+
 - 跨平台支持
 
     `Trojan-R` 可被交叉编译，支持 Android， Linux，Windows 和 MacOS 等操作系统，以及 x86，x86_64，armv7，aarch64 等硬件平台。

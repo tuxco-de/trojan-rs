@@ -1,0 +1,16 @@
+[package]
+name = "rustls"
+version = "0.22.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+craftls_impl = { package = "craftls", git = "https://github.com/3andne/craftls.git", rev = "bf1635f11c77fb211cdd73c756c863f6b4a15eaa", default-features = false }
+
+[features]
+default = ["logging", "ring", "tls12"]
+logging = ["craftls_impl/logging"]
+ring = ["craftls_impl/ring"]
+tls12 = ["craftls_impl/tls12"]
+aws_lc_rs = ["craftls_impl/aws_lc_rs"]
+read_buf = ["craftls_impl/read_buf"]

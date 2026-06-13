@@ -7,8 +7,7 @@ edition = "2021"
 [dependencies]
 bytes = "1.11"
 tokio = {version = "1.40", features = ["rt", "net", "io-util", "rt-multi-thread", "sync", "macros"]}
-tokio-rustls = { version = "0.26", features = ["ring"] }
-rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = { version = "0.25", features = ["ring"] }
 rustls-pki-types = "1.14"
 rustls-pemfile = "2.2"
 log = "0.4"
@@ -32,3 +31,6 @@ client = []
 server = []
 forward = []
 full = ["client", "server", "forward"]
+
+[patch.crates-io]
+rustls = { path = "vendor/rustls-craftls" }
