@@ -20,6 +20,32 @@ BIN_FILE="${INSTALL_DIR}/trojan-rs"
 # 请根据您的实际 GitHub 仓库修改此处，以获取最新的 Release 产物
 GITHUB_REPO="tuxco-de/trojan-rs"
 
+check_update() {
+    echo -e "=================================="
+    read -rp "是否检查并更新一键管理脚本本身？[y/N]: " UPDATE_CONFIRM
+    if [[ "$UPDATE_CONFIRM" =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}正在拉取最新脚本...${PLAIN}"
+        local TMP_SCRIPT
+        TMP_SCRIPT=$(mktemp)
+        if curl -sL "https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh" -o "${TMP_SCRIPT}"; then
+            if grep -q "trojan-rs" "${TMP_SCRIPT}"; then
+                cp -f "${TMP_SCRIPT}" "$0"
+                chmod +x "$0"
+                rm -f "${TMP_SCRIPT}"
+                echo -e "${GREEN}脚本更新成功！重新启动脚本...${PLAIN}"
+                sleep 1
+                exec "$0" "$@"
+            else
+                echo -e "${RED}下载的内容似乎不合法，更新失败。${PLAIN}"
+                rm -f "${TMP_SCRIPT}"
+            fi
+        else
+            echo -e "${RED}网络原因拉取最新脚本失败！${PLAIN}"
+            rm -f "${TMP_SCRIPT}"
+        fi
+    fi
+}
+
 check_root() {
     if [[ $EUID -ne 0 ]]; then
         echo -e "${RED}错误：本脚本必须以 root 身份运行！${PLAIN}"
@@ -388,4 +414,5 @@ menu() {
     done
 }
 
+check_update
 menu
