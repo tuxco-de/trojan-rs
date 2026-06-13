@@ -16,8 +16,7 @@ CERT_DIR="${INSTALL_DIR}/cert"
 BIN_FILE="${INSTALL_DIR}/trojan-rs"
 
 # 请根据您的实际 GitHub 仓库修改此处，以获取最新的 Release 产物
-# 例如: GITHUB_REPO="p4gefau1t/trojan-rs"
-GITHUB_REPO="your_username/trojan-rs"
+GITHUB_REPO="tuxco-de/trojan-rs"
 
 check_root() {
     if [[ $EUID -ne 0 ]]; then
