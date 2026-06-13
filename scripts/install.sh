@@ -49,6 +49,15 @@ install_acme() {
 }
 
 issue_cert() {
+    if [ -f "${CERT_DIR}/fullchain.cer" ] && [ -f "${CERT_DIR}/private.key" ]; then
+        echo -e "${GREEN}检测到已有证书文件 (${CERT_DIR}/fullchain.cer)。${PLAIN}"
+        read -p "是否需要强制重新申请/更新证书？[y/N]: " RENEW_CONFIRM
+        if [[ ! "$RENEW_CONFIRM" =~ ^[Yy]$ ]]; then
+            echo -e "${GREEN}跳过证书申请，将继续使用现有证书。${PLAIN}"
+            return
+        fi
+    fi
+
     read -p "请输入您要配置的域名 (例如: example.com): " DOMAIN
     if [ -z "$DOMAIN" ]; then
         echo -e "${RED}域名不能为空！${PLAIN}"
