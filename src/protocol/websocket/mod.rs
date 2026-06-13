@@ -83,7 +83,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
     ) -> Poll<Result<usize, io::Error>> {
         ready!(Pin::new(&mut self.inner).poll_ready(cx))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-        let message = Message::Binary(buf.into());
+        let message = Message::Binary(Bytes::copy_from_slice(buf));
         Pin::new(&mut self.inner)
             .start_send(message)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;

@@ -15,11 +15,7 @@ pub struct DirectTcpStream {
     inner: TcpStream,
 }
 
-impl DirectTcpStream {
-    pub fn new(inner: TcpStream) -> Self {
-        Self { inner }
-    }
-}
+
 
 impl AsyncRead for DirectTcpStream {
     fn poll_read(

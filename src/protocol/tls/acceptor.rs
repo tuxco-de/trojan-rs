@@ -7,7 +7,7 @@ use serde::Deserialize;
 use std::{io, path::Path, sync::Arc};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::{
-    rustls::{NoClientAuth, ServerConfig},
+    rustls::ServerConfig,
     server::TlsStream,
     TlsAcceptor,
 };
@@ -48,14 +48,18 @@ impl TrojanTlsAcceptor {
         let cert_path = Path::new(&config.cert);
         let key_path = Path::new(&config.key);
         let certs = load_cert(&cert_path)?;
-        let mut keys = load_key(&key_path)?;
+        let key = load_key(&key_path)?;
 
-        let mut tls_config = ServerConfig::new(NoClientAuth::new());
-        tls_config
-            .set_single_cert(certs, keys.remove(0))
+        let cipher_suites = get_cipher_suite(config.cipher.clone())?;
+        let mut provider = tokio_rustls::rustls::crypto::ring::default_provider();
+        provider.cipher_suites = cipher_suites;
+
+        let tls_config = ServerConfig::builder_with_provider(Arc::new(provider))
+            .with_safe_default_protocol_versions()
+            .map_err(|e| new_error(format!("tls version error {}", e)))?
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
             .map_err(|e| new_error(format!("invalid cert {}", e.to_string())))?;
-
-        tls_config.ciphersuites = get_cipher_suite(config.cipher.clone())?;
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
         Ok(Self {

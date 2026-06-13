@@ -72,13 +72,28 @@ impl RequestHeader {
         R: AsyncRead + Unpin,
     {
         let mut hash_buf = [0u8; HASH_STR_LEN];
-        let len = stream.read(&mut hash_buf).await?;
-        if len != HASH_STR_LEN {
-            first_packet.extend_from_slice(&hash_buf[..len]);
+        let mut offset = 0;
+
+        // Use a loop to prevent TCP fragmentation from falsely triggering fallback
+        while offset < HASH_STR_LEN {
+            match stream.read(&mut hash_buf[offset..]).await? {
+                0 => break, // EOF
+                n => offset += n,
+            }
+        }
+
+        if offset != HASH_STR_LEN {
+            first_packet.extend_from_slice(&hash_buf[..offset]);
             return Err(new_error("first packet too short"));
         }
 
-        if valid_hash != hash_buf {
+        // Constant-time equality check to prevent timing attacks
+        let mut diff = 0;
+        for (a, b) in valid_hash.iter().zip(hash_buf.iter()) {
+            diff |= a ^ b;
+        }
+
+        if diff != 0 {
             first_packet.extend_from_slice(&hash_buf);
             return Err(new_error(format!(
                 "invalid password hash: {}",
