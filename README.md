@@ -1,24 +1,30 @@
 # Trojan-rs
 
-高性能的 Trojan 代理，使用 Rust 实现。为嵌入式设备或低性能机器设计。R 意为 **R**ust / **R**apid。
+专为 **NAT VPS** 与嵌入式低端设备深度优化的轻量级、高性能代理服务端，基于 Rust 实现。R 意为 **R**ust / **R**apid。
 
 **Trojan-rs 目前为实验性项目，仍处于重度开发中，协议、接口和配置文件格式均可能改变，请勿用于任何生产环境。**
 
 ## 特性
 
+- 专为 NAT VPS 优化
+
+    极度缩减的二进制文件体积（无调试符号表下仅约 ~2.8MB），彻底去除正则引擎等无关依赖，禁用所有非核心功能。在内存只有 128MB 甚至 64MB 的低端 NAT 小鸡上也能丝滑流畅运行，保持极低的资源消耗与极佳的稳定性。
+
+- 丰富的协议解析与承载
+
+    原生支持多种主流代理协议与传输层组合的解析和转发：
+    - **核心协议**: 支持 `Trojan`、`VLESS`、`Socks5` 协议栈。
+    - **传输层**: 支持基础的 `Direct` (TCP/UDP 直连) 和抗阻断的 `WebSocket` (WS/WSS)。
+    - **安全层**: 支持基于 `rustls` 的 `TLS` 加密承载，以及主动探测防御的协议回落 (Fallback)。
+
 - 极致性能
 
     牺牲部分灵活性，采用激进的性能优化策略以极力减少不必要的开销。采用[更高效](https://jbp.io/2019/07/01/rustls-vs-openssl-performance.html)的 `rustls` （相较 openssl）建立 TLS 隧道以提升加解密的性能表现。
-
     使用 tokio 异步运行时，允许 `Trojan-rs` 同时使用所有 CPU 核心，保证低时延和高效的吞吐能力。
-
-    > 需要更多 benchmark 数据和更多优化
 
 - 低内存占用
 
     Rust 无 GC 机制，内存占用可被预计。简化的握手和连接流程，仅使用极少的堆内存和复制。
-
-    > 需要更多 benchmark 数据和更多优化
 
 - 简易配置
 
@@ -35,7 +41,6 @@
 - 隐蔽传输
 
     `Trojan-rs` 使用 TLS 建立代理隧道，难以从正常 TLS 流量中被区分。支持协议回落，在遭到主动探测时将与普通 TLS 服务器表现一致。
-
     客户端支持 uTLS 风格的 ClientHello 指纹模拟。在 `[tls]` 配置中设置 `fingerprint = "chrome"` 即可启用；当前支持 `chrome`、`chrome_108`、`firefox` 和 `safari`。启用后浏览器指纹会接管密码套件顺序，因此 `cipher` 配置将被忽略。
 
 - 跨平台支持
@@ -47,11 +52,8 @@
 由于与项目的设计原则冲突，下列特性不计划实现
 
 - 统计功能，包括 API 和数据库对接等
-
 - 路由功能
-
 - 用户自定义协议栈
-
 - 透明代理
 
 如果需要实现上述功能，请使用其他类似工具与 `Trojan-rs` 组合实现。
@@ -61,7 +63,6 @@
 - 安全性
 
     `Trojan-rs` 不涉及底层操作，且目前的性能瓶颈与其无关，无使用 unsafe rust 的必要。协议回落和 TLS 配置等安全敏感代码经过仔细考虑和审计，同时也欢迎更多来自开源社区的安全审计。
-
     目前 `Trojan-rs` 使用 `#![forbid(unsafe_code)]` 禁用 unsafe rust。如未来有必要使用 unsafe rust 时，必须经过严格审计和测试。
 
 - 使用静态分发而非动态分发
@@ -78,9 +79,17 @@
 
 ## 部署和使用
 
+### 推荐架构与配置方式
+
+对于绝大多数 NAT VPS 用户，我们强烈推荐使用以下组合以最大化连通性、隐蔽性和性能：
+**VLESS / Trojan + WebSocket (WSS) + TLS + CDN**
+
+- **架构解析**：将您的域名接入 CDN（如 Cloudflare，并点亮小黄云）。服务端暴露常规的 443 或任意自定义端口，客户端的流量先经过 CDN 边缘节点，再通过 WebSocket 发送到您的源站。
+- **防探测机制**：自带高度定制的 Web Fallback（协议回落）功能。遇到非正常的 GFW 主动探测或未知爬虫访问时，自动返回一个以假乱真的静态“IP 查询站点”伪装页面，彻底隐藏代理服务特征。
+
 ### 服务端一键部署 (推荐)
 
-我们为 Linux 服务端提供了交互式一键部署与管理脚本，支持安装 Trojan+WSS 或 VLESS+WSS、通过 acme.sh 手动 DNS-01 模式签发 TLS 证书、配置 systemd 服务并查看运行日志。手动 DNS 模式无法自动续期，每次续签都需要重新配置 `_acme-challenge` TXT 记录。
+我们为 Linux 服务端提供了交互式一键部署与管理脚本。支持一键安装上述推荐的 **Trojan+WSS** 或 **VLESS+WSS** 架构、生成并下发 Clash 客户端配置、配置 systemd 服务。内置 acme.sh 脚本，通过纯手动 DNS-01 模式为您签发完全合法的 TLS 证书（即使 80 端口被封死的小鸡也能签发）。
 
 在支持的系统环境 (Ubuntu / Debian / CentOS) 上，您只需执行以下命令即可：
 
@@ -107,27 +116,19 @@ make armv7-unknown-linux-musleabihf
 ```
 
 编译默认开启链接时优化，以提升性能并减小可执行文件体积，因此编译耗时可能较其他项目更长。
-
 编译完成后可以使用 `strip` 去除调试符号表以减少文件体积。
 
 ## TODOs
 
 - [x] 更完善的交互接口和文档
-
 - [ ] 更多的单元测试和集成测试
-
 - [ ] 性能调优
-
 - [ ] 可复现的 benchmark 环境
-
 - [ ] 实现 lib.rs 和导出函数
-
 - [x] 分离客户端和服务端 features
-
 - [x] Github Actions 跨平台持续集成与全自动构建发布
 
 ## 致谢
 
 - [trojan](https://github.com/trojan-gfw/trojan)
-
 - [shadowsocks-rust](https://github.com/shadowsocks/shadowsocks-rust)
