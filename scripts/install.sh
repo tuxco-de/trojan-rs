@@ -6,7 +6,8 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.5"
+SCRIPT_VERSION="1.1.6"
+TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
 RED="\033[1;31m"

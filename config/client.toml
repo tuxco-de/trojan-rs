@@ -18,6 +18,12 @@ cipher = ["TLS13_AES_128_GCM_SHA256"] # optional
 # optional
 #[websocket]
 #uri = "wss://example.com/trojanpath"
+# handshake_timeout_secs = 10
+# read_buffer_size = 16384
+# write_buffer_size = 16384
+# max_message_size = 1048576
+# max_frame_size = 1048576
+# max_write_buffer_size = 2097152
 
 # optional
 #[mux]

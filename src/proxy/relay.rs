@@ -1,9 +1,8 @@
 use std::{io, sync::Arc};
-use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::copy_bidirectional_with_sizes;
 
 use crate::protocol::{
-    AcceptResult, ProxyAcceptor, ProxyConnector, ProxyTcpStream, ProxyUdpStream, UdpRead,
-    UdpWrite,
+    AcceptResult, ProxyAcceptor, ProxyConnector, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite,
 };
 
 const RELAY_BUFFER_SIZE: usize = 0x4000;
@@ -17,22 +16,6 @@ async fn copy_udp<R: UdpRead, W: UdpWrite>(r: &mut R, w: &mut W) -> io::Result<(
             break;
         }
         w.write_to(&buf[..len], &addr).await?;
-    }
-    Ok(())
-}
-
-async fn copy_tcp<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
-    r: &mut R,
-    w: &mut W,
-) -> io::Result<()> {
-    let mut buf = [0u8; RELAY_BUFFER_SIZE];
-    loop {
-        let len = r.read(&mut buf).await?;
-        if len == 0 {
-            break;
-        }
-        w.write_all(&buf[..len]).await?;
-        w.flush().await?;
     }
     Ok(())
 }
@@ -54,22 +37,12 @@ pub async fn relay_udp<T: ProxyUdpStream, U: ProxyUdpStream>(a: T, b: U) {
     log::info!("udp session ends");
 }
 
-pub async fn relay_tcp<T: ProxyTcpStream, U: ProxyTcpStream>(a: T, b: U) {
-    let (mut a_rx, mut a_tx) = split(a);
-    let (mut b_rx, mut b_tx) = split(b);
-    let t1 = copy_tcp(&mut a_rx, &mut b_tx);
-    let t2 = copy_tcp(&mut b_rx, &mut a_tx);
-    let e = tokio::select! {
-        e = t1 => {e}
-        e = t2 => {e}
-    };
-    if let Err(e) = e {
+pub async fn relay_tcp<T: ProxyTcpStream, U: ProxyTcpStream>(mut a: T, mut b: U) {
+    if let Err(e) =
+        copy_bidirectional_with_sizes(&mut a, &mut b, RELAY_BUFFER_SIZE, RELAY_BUFFER_SIZE).await
+    {
         log::debug!("relay_tcp err: {}", e)
     }
-    let mut a = a_rx.unsplit(a_tx);
-    let mut b = b_rx.unsplit(b_tx);
-    let _ = a.shutdown().await;
-    let _ = b.shutdown().await;
     log::info!("tcp session ends");
 }
 
