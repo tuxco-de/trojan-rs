@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.1"
+SCRIPT_VERSION="1.2.2"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -267,7 +267,7 @@ install_deps() {
         yum install -y curl tar openssl
     elif command_exists apk; then
         apk update || true
-        apk add curl tar openssl
+        apk add curl tar openssl gcompat libstdc++
     else
         echo -e "${ERROR} 不支持的包管理器，请使用 Debian/Ubuntu, RHEL/CentOS/Fedora 或 Alpine。${PLAIN}"
         exit 1
