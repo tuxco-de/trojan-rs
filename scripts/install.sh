@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.2"
+SCRIPT_VERSION="1.2.4"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -475,10 +475,14 @@ download_bin() {
     local temp_dir
     local archive
     local extracted_bin
+    local is_musl=""
     arch=$(uname -m)
+    if command_exists apk; then
+        is_musl="-musl"
+    fi
     case "$arch" in
-        x86_64|amd64) asset_name="trojan-rs-server-linux-amd64.tar.gz" ;;
-        aarch64|arm64) asset_name="trojan-rs-server-linux-arm64.tar.gz" ;;
+        x86_64|amd64) asset_name="trojan-rs-server-linux${is_musl}-amd64.tar.gz" ;;
+        aarch64|arm64) asset_name="trojan-rs-server-linux${is_musl}-arm64.tar.gz" ;;
         *) echo -e "${ERROR} 不支持的架构: $arch${PLAIN}"; return 1 ;;
     esac
 
@@ -520,6 +524,11 @@ download_bin() {
     fi
 
     install -m 0755 "${extracted_bin}" "${BIN_FILE}.new"
+    
+    if command_exists apk; then
+        apk add --no-cache gcompat libstdc++ >/dev/null 2>&1 || true
+    fi
+
     if ! "${BIN_FILE}.new" --version >/dev/null 2>&1; then
         rm -f "${BIN_FILE}.new"
         rm -rf -- "${temp_dir}"
