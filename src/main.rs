@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 
-use clap::{Command, Arg};
+use clap::{Arg, Command};
 
 mod error;
 mod protocol;
@@ -8,8 +8,8 @@ mod proxy;
 
 #[tokio::main]
 async fn main() {
-    let matches = Command::new("trojan-r")
-        .version("v0.1.0")
+    let matches = Command::new("trojan-rs")
+        .version(env!("CARGO_PKG_VERSION"))
         .arg(
             Arg::new("config")
                 .short('c')
@@ -23,6 +23,7 @@ async fn main() {
         .get_matches();
     let filename = matches.get_one::<String>("config").unwrap().to_string();
     if let Err(e) = proxy::launch_from_config_filename(filename).await {
-        println!("failed to launch proxy: {}", e);
+        eprintln!("failed to launch proxy: {}", e);
+        std::process::exit(1);
     }
 }

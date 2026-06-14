@@ -1,8 +1,8 @@
-# Trojan-R
+# Trojan-rs
 
 高性能的 Trojan 代理，使用 Rust 实现。为嵌入式设备或低性能机器设计。R 意为 **R**ust / **R**apid。
 
-**Trojan-R 目前为实验性项目，仍处于重度开发中，协议、接口和配置文件格式均可能改变，请勿用于任何生产环境。**
+**Trojan-rs 目前为实验性项目，仍处于重度开发中，协议、接口和配置文件格式均可能改变，请勿用于任何生产环境。**
 
 ## 特性
 
@@ -10,7 +10,7 @@
 
     牺牲部分灵活性，采用激进的性能优化策略以极力减少不必要的开销。采用[更高效](https://jbp.io/2019/07/01/rustls-vs-openssl-performance.html)的 `rustls` （相较 openssl）建立 TLS 隧道以提升加解密的性能表现。
 
-    使用 tokio 异步运行时，允许 `Trojan-R` 同时使用所有 CPU 核心，保证低时延和高效的吞吐能力。
+    使用 tokio 异步运行时，允许 `Trojan-rs` 同时使用所有 CPU 核心，保证低时延和高效的吞吐能力。
 
     > 需要更多 benchmark 数据和更多优化
 
@@ -30,17 +30,17 @@
 
 - 密码学安全
 
-    使用 `rustls` 建立 TLS 加密安全信道，过时的或不安全的密码学套件[均被禁用](https://docs.rs/rustls/0.18.1/rustls/#non-features)。`Trojan-R` 强制开启服务器证书校验以防止中间人攻击。
+    使用 `rustls` 建立 TLS 加密安全信道，过时的或不安全的密码学套件[均被禁用](https://docs.rs/rustls/0.18.1/rustls/#non-features)。`Trojan-rs` 强制开启服务器证书校验以防止中间人攻击。
 
 - 隐蔽传输
 
-    `Trojan-R` 使用 TLS 建立代理隧道，难以从正常 TLS 流量中被区分。支持协议回落，在遭到主动探测时将与普通 TLS 服务器表现一致。
+    `Trojan-rs` 使用 TLS 建立代理隧道，难以从正常 TLS 流量中被区分。支持协议回落，在遭到主动探测时将与普通 TLS 服务器表现一致。
 
     客户端支持 uTLS 风格的 ClientHello 指纹模拟。在 `[tls]` 配置中设置 `fingerprint = "chrome"` 即可启用；当前支持 `chrome`、`chrome_108`、`firefox` 和 `safari`。启用后浏览器指纹会接管密码套件顺序，因此 `cipher` 配置将被忽略。
 
 - 跨平台支持
 
-    `Trojan-R` 可被交叉编译，支持 Android， Linux，Windows 和 MacOS 等操作系统，以及 x86，x86_64，armv7，aarch64 等硬件平台。
+    `Trojan-rs` 可被交叉编译，支持 Android， Linux，Windows 和 MacOS 等操作系统，以及 x86，x86_64，armv7，aarch64 等硬件平台。
 
 ## 非特性
 
@@ -54,15 +54,15 @@
 
 - 透明代理
 
-如果需要实现上述功能，请使用其他类似工具与 `Trojan-R` 组合实现。
+如果需要实现上述功能，请使用其他类似工具与 `Trojan-rs` 组合实现。
 
 ## 设计原则
 
 - 安全性
 
-    `Trojan-R` 不涉及底层操作，且目前的性能瓶颈与其无关，无使用 unsafe rust 的必要。协议回落和 TLS 配置等安全敏感代码经过仔细考虑和审计，同时也欢迎更多来自开源社区的安全审计。
+    `Trojan-rs` 不涉及底层操作，且目前的性能瓶颈与其无关，无使用 unsafe rust 的必要。协议回落和 TLS 配置等安全敏感代码经过仔细考虑和审计，同时也欢迎更多来自开源社区的安全审计。
 
-    目前 `Trojan-R` 使用 `#![forbid(unsafe_code)]` 禁用 unsafe rust。如未来有必要使用 unsafe rust 时，必须经过严格审计和测试。
+    目前 `Trojan-rs` 使用 `#![forbid(unsafe_code)]` 禁用 unsafe rust。如未来有必要使用 unsafe rust 时，必须经过严格审计和测试。
 
 - 使用静态分发而非动态分发
 
@@ -80,7 +80,7 @@
 
 ### 服务端一键部署 (推荐)
 
-我们为 Linux 服务端提供了一个全自动的交互式一键部署与管理脚本，支持自动化安装 Trojan+WSS 或 VLESS+WSS 协议、利用 acme.sh 自动申请 TLS 证书、配置系统级守护进程并提供运行日志查看。
+我们为 Linux 服务端提供了交互式一键部署与管理脚本，支持安装 Trojan+WSS 或 VLESS+WSS、通过 acme.sh 手动 DNS-01 模式签发 TLS 证书、配置 systemd 服务并查看运行日志。手动 DNS 模式无法自动续期，每次续签都需要重新配置 `_acme-challenge` TXT 记录。
 
 在支持的系统环境 (Ubuntu / Debian / CentOS) 上，您只需执行以下命令即可：
 
@@ -92,7 +92,7 @@ sudo ./install.sh
 
 ### 手动部署与客户端使用
 
-`Trojan-R` 核心程序原生使用 TOML 格式进行配置。如需手动部署服务端或运行客户端程序，请参考项目仓库 `config` 文件夹下的配置文件模板示例。
+`Trojan-rs` 核心程序原生使用 TOML 格式进行配置。如需手动部署服务端或运行客户端程序，请参考项目仓库 `config` 文件夹下的配置文件模板示例。
 
 ## 编译
 

@@ -1,6 +1,6 @@
 [package]
 name = "trojan-rs"
-version = "1.1.3"
+version = "1.1.5"
 authors = ["Page Fault <p4gefau1t@gmail.com>"]
 edition = "2021"
 
@@ -14,9 +14,9 @@ log = "0.4"
 async-trait = "0.1"
 sha2 = "0.11"
 serde = { version = "1.0", features = ["derive"] } 
-env_logger = "0.11"
-toml = "1.1"
-clap = "4.5"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color"] }
+toml = { version = "1.1", default-features = false, features = ["parse", "serde"] }
+clap = { version = "4.5", default-features = false, features = ["std", "help", "usage", "error-context"] }
 webpki-roots = "1.0"
 tokio-tungstenite = "0.29"
 futures-core = "0.3"
@@ -26,6 +26,9 @@ uuid = { version = "1.18", default-features = false }
 
 [profile.release]
 lto = true
+strip = true
+codegen-units = 1
+panic = "abort"
 
 [features]
 default = ["full"]
