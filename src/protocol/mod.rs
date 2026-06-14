@@ -4,7 +4,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::Error;
 
-pub mod camouflage;
+pub mod fallback;
 pub mod direct;
 pub mod mux;
 pub mod socks5;

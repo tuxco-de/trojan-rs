@@ -47,11 +47,13 @@ impl UdpRead for Socks5UdpStream {
         };
 
         let src_address = *self.src_addr.read().await;
-        if src_address.is_none() {
+        if let Some(src) = src_address {
+            if src != addr {
+                return Err(new_error("udp packet from unknown source"));
+            }
+        } else {
             // first packet
             self.src_addr.write().await.replace(addr);
-        } else if src_address.unwrap() != addr {
-            return Err(new_error("udp packet from unknown source"));
         }
         log::debug!("recv_len={}", recv_len);
         let header = UdpAssociateHeader::read_from_buf(&recv_buf[..recv_len])?;

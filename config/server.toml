@@ -3,7 +3,6 @@ log_level = "debug" # optional
 
 [trojan]
 password = "password"
-fallback_addr = "127.0.0.1:80"
 
 # Use [vless] instead of [trojan] to enable VLESS over WSS.
 # [vless]
@@ -16,9 +15,9 @@ sni = "example.com"
 cert = "cert.pem"
 key = "key.pem"
 
-# optional: serve a static page for ordinary HTTPS requests and invalid WS paths
-# [camouflage]
-# page = "config/camouflage.html"
+# optional: serve a static page for ordinary HTTPS requests and invalid passwords
+[fallback]
+page = "config/camouflage.html"
 # request_timeout_secs = 10
 # max_request_size = 8192
 

@@ -3,7 +3,7 @@ use std::io;
 
 pub mod acceptor;
 
-use std::{fmt::Debug, u8, vec};
+use std::{fmt::Debug, vec};
 
 use bytes::{BufMut, BytesMut};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};

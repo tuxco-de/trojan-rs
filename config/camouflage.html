@@ -3,17 +3,362 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Welcome</title>
+  <title>IP Lookup — What Is My IP Address?</title>
+  <meta name="description" content="Instantly find your public IP address, geolocation, ISP, and network details.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
-    body { margin: 0; font: 16px/1.6 system-ui, sans-serif; color: #202124; background: #f7f8fa; }
-    main { max-width: 720px; margin: 12vh auto; padding: 48px; background: #fff; border-radius: 12px; box-shadow: 0 8px 30px #00000012; }
-    h1 { margin-top: 0; font-size: 2rem; }
+    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+    :root{
+      --bg:#0b0f1a;
+      --surface:rgba(255,255,255,.04);
+      --surface-hover:rgba(255,255,255,.07);
+      --border:rgba(255,255,255,.08);
+      --text:#e4e6eb;
+      --text-secondary:rgba(228,230,235,.55);
+      --accent:#6c5ce7;
+      --accent-light:#a29bfe;
+      --gradient:linear-gradient(135deg,#6c5ce7 0%,#00cec9 100%);
+      --glow:0 0 80px rgba(108,92,231,.25);
+      --radius:16px;
+      --font:'Inter',system-ui,-apple-system,sans-serif;
+    }
+
+    html{font-size:16px}
+
+    body{
+      min-height:100vh;
+      font-family:var(--font);
+      color:var(--text);
+      background:var(--bg);
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      padding:0 20px;
+      overflow-x:hidden;
+    }
+
+    /* Animated gradient background orbs */
+    body::before,body::after{
+      content:'';position:fixed;border-radius:50%;filter:blur(120px);opacity:.35;pointer-events:none;z-index:0;
+    }
+    body::before{width:600px;height:600px;background:#6c5ce7;top:-180px;left:-120px;animation:float 18s ease-in-out infinite alternate}
+    body::after{width:500px;height:500px;background:#00cec9;bottom:-150px;right:-100px;animation:float 22s ease-in-out infinite alternate-reverse}
+
+    @keyframes float{0%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,40px) scale(1.1)}100%{transform:translate(-30px,70px) scale(.95)}}
+
+    header{
+      position:relative;z-index:1;
+      text-align:center;
+      margin-top:clamp(48px,10vh,96px);
+      margin-bottom:40px;
+    }
+
+    header h1{
+      font-size:clamp(1.6rem,4vw,2.4rem);
+      font-weight:700;
+      letter-spacing:-.03em;
+      background:var(--gradient);
+      -webkit-background-clip:text;
+      -webkit-text-fill-color:transparent;
+      background-clip:text;
+    }
+
+    header p{
+      margin-top:8px;
+      font-size:.95rem;
+      color:var(--text-secondary);
+    }
+
+    /* IP hero card */
+    .ip-hero{
+      position:relative;z-index:1;
+      width:100%;
+      max-width:560px;
+      padding:36px 32px;
+      background:var(--surface);
+      border:1px solid var(--border);
+      border-radius:var(--radius);
+      backdrop-filter:blur(24px);
+      -webkit-backdrop-filter:blur(24px);
+      box-shadow:var(--glow);
+      text-align:center;
+      margin-bottom:28px;
+      animation:slideUp .6s cubic-bezier(.22,1,.36,1) both;
+    }
+
+    @keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+
+    .ip-hero .label{
+      font-size:.75rem;
+      font-weight:600;
+      text-transform:uppercase;
+      letter-spacing:.12em;
+      color:var(--text-secondary);
+      margin-bottom:12px;
+    }
+
+    .ip-hero .ip-address{
+      font-size:clamp(1.8rem,5vw,2.6rem);
+      font-weight:700;
+      letter-spacing:-.02em;
+      color:#fff;
+      word-break:break-all;
+      min-height:1.2em;
+    }
+
+    .ip-hero .ip-address.loading{
+      background:linear-gradient(90deg,var(--surface) 25%,var(--surface-hover) 50%,var(--surface) 75%);
+      background-size:200% 100%;
+      animation:shimmer 1.5s infinite;
+      border-radius:8px;
+      color:transparent;
+      user-select:none;
+    }
+
+    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+    .ip-hero .location{
+      margin-top:10px;
+      font-size:.9rem;
+      color:var(--text-secondary);
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      min-height:1.4em;
+    }
+
+    .ip-hero .location .flag{font-size:1.2rem}
+
+    /* Detail cards grid */
+    .details{
+      position:relative;z-index:1;
+      width:100%;
+      max-width:560px;
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:12px;
+      margin-bottom:60px;
+      animation:slideUp .6s cubic-bezier(.22,1,.36,1) .15s both;
+    }
+
+    .detail-card{
+      padding:20px;
+      background:var(--surface);
+      border:1px solid var(--border);
+      border-radius:12px;
+      backdrop-filter:blur(16px);
+      -webkit-backdrop-filter:blur(16px);
+      transition:background .25s,border-color .25s,transform .25s;
+    }
+
+    .detail-card:hover{
+      background:var(--surface-hover);
+      border-color:rgba(255,255,255,.12);
+      transform:translateY(-2px);
+    }
+
+    .detail-card .detail-label{
+      font-size:.7rem;
+      font-weight:600;
+      text-transform:uppercase;
+      letter-spacing:.1em;
+      color:var(--text-secondary);
+      margin-bottom:6px;
+    }
+
+    .detail-card .detail-value{
+      font-size:.95rem;
+      font-weight:500;
+      color:var(--text);
+      word-break:break-word;
+      min-height:1.2em;
+    }
+
+    .detail-value.loading{
+      background:linear-gradient(90deg,var(--surface) 25%,var(--surface-hover) 50%,var(--surface) 75%);
+      background-size:200% 100%;
+      animation:shimmer 1.5s infinite;
+      border-radius:6px;
+      color:transparent;
+      user-select:none;
+      width:80%;
+      height:1.2em;
+    }
+
+    /* Copy button */
+    .copy-btn{
+      margin-top:16px;
+      display:inline-flex;
+      align-items:center;
+      gap:6px;
+      padding:8px 18px;
+      font-family:var(--font);
+      font-size:.8rem;
+      font-weight:600;
+      color:var(--accent-light);
+      background:rgba(108,92,231,.12);
+      border:1px solid rgba(108,92,231,.25);
+      border-radius:8px;
+      cursor:pointer;
+      transition:all .2s;
+    }
+
+    .copy-btn:hover{
+      background:rgba(108,92,231,.2);
+      border-color:rgba(108,92,231,.4);
+      transform:translateY(-1px);
+    }
+
+    .copy-btn:active{transform:scale(.97)}
+
+    .copy-btn svg{width:14px;height:14px;fill:currentColor}
+
+    /* Footer */
+    footer{
+      position:relative;z-index:1;
+      margin-top:auto;
+      padding:24px 0;
+      font-size:.75rem;
+      color:var(--text-secondary);
+      text-align:center;
+    }
+
+    /* Error state */
+    .error-msg{
+      margin-top:10px;
+      font-size:.85rem;
+      color:#fd79a8;
+    }
+
+    /* Responsive */
+    @media(max-width:480px){
+      .details{grid-template-columns:1fr}
+      .ip-hero{padding:28px 20px}
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>Welcome</h1>
-    <p>The service is running normally.</p>
-  </main>
+  <header>
+    <h1>IP Address Lookup</h1>
+    <p>Your connection details at a glance</p>
+  </header>
+
+  <div class="ip-hero" id="ip-hero">
+    <div class="label">Your Public IP Address</div>
+    <div class="ip-address loading" id="ip-display">000.000.000.000</div>
+    <div class="location" id="location-display"></div>
+    <button class="copy-btn" id="copy-btn" style="display:none" onclick="copyIP()">
+      <svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
+      <span id="copy-text">Copy</span>
+    </button>
+  </div>
+
+  <div class="details" id="details">
+    <div class="detail-card">
+      <div class="detail-label">ISP / Organization</div>
+      <div class="detail-value loading" id="d-isp"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">ASN</div>
+      <div class="detail-value loading" id="d-asn"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">City</div>
+      <div class="detail-value loading" id="d-city"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">Region</div>
+      <div class="detail-value loading" id="d-region"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">Country</div>
+      <div class="detail-value loading" id="d-country"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">Timezone</div>
+      <div class="detail-value loading" id="d-tz"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">Latitude</div>
+      <div class="detail-value loading" id="d-lat"></div>
+    </div>
+    <div class="detail-card">
+      <div class="detail-label">Longitude</div>
+      <div class="detail-value loading" id="d-lon"></div>
+    </div>
+  </div>
+
+  <footer>&copy; 2026 IP Lookup Service &mdash; All rights reserved</footer>
+
+  <script>
+    const $ = id => document.getElementById(id);
+
+    function countryFlag(code) {
+      if (!code) return '';
+      return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 - 65 + c.charCodeAt(0)));
+    }
+
+    function set(id, value) {
+      const el = $(id);
+      el.classList.remove('loading');
+      el.textContent = value || '—';
+    }
+
+    async function fetchIP() {
+      try {
+        const res = await fetch('https://ipapi.co/json/');
+        if (!res.ok) throw new Error(res.statusText);
+        const d = await res.json();
+
+        const ipEl = $('ip-display');
+        ipEl.classList.remove('loading');
+        ipEl.textContent = d.ip || '—';
+
+        const flag = countryFlag(d.country_code);
+        $('location-display').innerHTML =
+          `<span class="flag">${flag}</span> ${d.city || ''}${d.city && d.region ? ', ' : ''}${d.region || ''}, ${d.country_name || ''}`;
+
+        set('d-isp', d.org);
+        set('d-asn', d.asn);
+        set('d-city', d.city);
+        set('d-region', d.region);
+        set('d-country', d.country_name);
+        set('d-tz', d.timezone);
+        set('d-lat', d.latitude != null ? String(d.latitude) : null);
+        set('d-lon', d.longitude != null ? String(d.longitude) : null);
+
+        $('copy-btn').style.display = '';
+      } catch (err) {
+        const ipEl = $('ip-display');
+        ipEl.classList.remove('loading');
+        ipEl.textContent = '—';
+        const errDiv = document.createElement('div');
+        errDiv.className = 'error-msg';
+        errDiv.textContent = 'Unable to retrieve IP information. Please try again later.';
+        $('ip-hero').appendChild(errDiv);
+
+        document.querySelectorAll('.detail-value.loading').forEach(el => {
+          el.classList.remove('loading');
+          el.textContent = '—';
+        });
+      }
+    }
+
+    function copyIP() {
+      const ip = $('ip-display').textContent;
+      if (!ip || ip === '—') return;
+      navigator.clipboard.writeText(ip).then(() => {
+        const btn = $('copy-text');
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 1500);
+      });
+    }
+
+    fetchIP();
+  </script>
 </body>
 </html>

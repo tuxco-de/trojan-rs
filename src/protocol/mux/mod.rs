@@ -89,7 +89,7 @@ impl RequestHeader {
         cursor.put_u8(cmd);
         addr.write_to_buf(cursor);
 
-        w.write(&buf).await?;
+        w.write_all(&buf).await?;
         Ok(())
     }
 }
@@ -138,9 +138,9 @@ impl MuxFrame {
         cursor.put_u8(command);
         cursor.put_u16_le(data_length as u16);
         cursor.put_u32_le(stream_id);
-        writer.write(&buf).await?;
+        writer.write_all(&buf).await?;
         if let MuxFrame::Push(f) = self {
-            writer.write(&f.data).await?;
+            writer.write_all(&f.data).await?;
         }
         writer.flush().await?;
         Ok(())
@@ -453,7 +453,7 @@ impl UdpWrite for WriteHalf<MuxStream> {
         let len = min(buf.len(), MAX_DATA_LEN);
         let udp_header = UdpHeader::new(addr, len);
         udp_header.write_to(self).await?;
-        self.write(buf).await?;
+        self.write_all(buf).await?;
         Ok(())
     }
 }
@@ -576,12 +576,12 @@ impl MuxHandle {
                                             continue;
                                         }
                                     };
-                                    if let Err(_) = tx.send(f).await {
+                                    if tx.send(f).await.is_err() {
                                         log::debug!(
                                             "frame recvd but the stream {:x} is closed",
                                             stream_id
                                         );
-                                        if let Some(_) = mux_map.lock().await.remove(&stream_id) {
+                                        if mux_map.lock().await.remove(&stream_id).is_some() {
                                             echo_finish_frame(stream_id, &write_tx).await?;
                                         }
                                     }
@@ -628,7 +628,7 @@ impl MuxHandle {
                                     }
                                     MuxFrame::Finish(f) => {
                                         log::debug!("local shutdown stream {:x}", f.stream_id);
-                                        if let None = mux_map.lock().await.remove(&f.stream_id) {
+                                        if mux_map.lock().await.remove(&f.stream_id).is_none() {
                                             continue;
                                         }
                                     }

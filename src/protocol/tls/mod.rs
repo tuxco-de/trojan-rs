@@ -15,7 +15,7 @@ pub mod acceptor;
 pub mod connector;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
-    return Error::new(format!("tls: {}", message.to_string())).into();
+    Error::new(format!("tls: {}", message.to_string())).into()
 }
 
 pub fn load_cert(path: &Path) -> io::Result<Vec<CertificateDer<'static>>> {

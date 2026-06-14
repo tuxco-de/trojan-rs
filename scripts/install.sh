@@ -201,7 +201,7 @@ mode = "server"
 log_level = "info"
 
 [tls]
-addr = "0.0.0.0:${PORT}"
+addr = "[::]:${PORT}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
@@ -210,6 +210,9 @@ users = ["${UUID}"]
 
 [websocket]
 path = "${WSPATH}"
+
+[fallback]
+page = "${INSTALL_DIR}/camouflage.html"
 EOF
 
     else
@@ -220,24 +223,23 @@ EOF
             echo -e "${GREEN}已为您自动生成随机密码: ${PASSWORD}${PLAIN}"
         fi
 
-        read -rp "请输入回落地址(Fallback) (默认: 127.0.0.1:80): " FALLBACK
-        FALLBACK=${FALLBACK:-127.0.0.1:80}
-
         cat > "${CONFIG_FILE}" <<EOF
 mode = "server"
 log_level = "info"
 
 [tls]
-addr = "0.0.0.0:${PORT}"
+addr = "[::]:${PORT}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
 [trojan]
 password = "${PASSWORD}"
-fallback_addr = "${FALLBACK}"
 
 [websocket]
 path = "${WSPATH}"
+
+[fallback]
+page = "${INSTALL_DIR}/camouflage.html"
 EOF
     fi
 

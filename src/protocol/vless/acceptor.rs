@@ -182,6 +182,7 @@ mod tests {
         let websocket_config: WebSocketAcceptorConfig = toml::from_str("path = '/vless'").unwrap();
         let websocket = WebSocketAcceptor::new_strict(
             &websocket_config,
+            None,
             SingleStreamAcceptor {
                 stream: Arc::new(Mutex::new(Some(server))),
             },

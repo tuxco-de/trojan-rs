@@ -7,7 +7,6 @@ use log::LevelFilter;
 use crate::{
     error::Error,
     protocol::{
-        camouflage::CamouflageAcceptor,
         direct::connector::DirectConnector,
         mux::{
             acceptor::MuxAcceptor,
@@ -31,7 +30,6 @@ use crate::{
 };
 
 use self::config::*;
-pub use self::relay::relay_tcp;
 use self::relay::run_proxy;
 
 pub async fn launch_from_config_filename(filename: String) -> io::Result<()> {
@@ -67,17 +65,12 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             let config: ServerConfig = toml::from_str(&config_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let direct_connector = DirectConnector {};
             let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
-            let websocket_path = config.websocket.as_ref().map(|websocket| websocket.path());
-            let camouflage_acceptor = CamouflageAcceptor::new(
-                config.camouflage.as_ref(),
-                websocket_path,
-                tls_acceptor,
-            )?;
+            let fallback_config = config.fallback.as_ref();
             match (config.trojan, config.vless) {
                 (Some(trojan), None) => {
                     if let Some(websocket) = config.websocket {
-                        let ws_acceptor = WebSocketAcceptor::new(&websocket, camouflage_acceptor)?;
-                        let trojan_acceptor = TrojanAcceptor::new(&trojan, ws_acceptor)?;
+                        let ws_acceptor = WebSocketAcceptor::new(&websocket, fallback_config, tls_acceptor)?;
+                        let trojan_acceptor = TrojanAcceptor::new(&trojan, fallback_config, ws_acceptor)?;
                         if let Some(mux) = config.mux {
                             let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
                             run_proxy(mux_acceptor, direct_connector).await?;
@@ -85,7 +78,7 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
                             run_proxy(trojan_acceptor, direct_connector).await?;
                         }
                     } else {
-                        let trojan_acceptor = TrojanAcceptor::new(&trojan, camouflage_acceptor)?;
+                        let trojan_acceptor = TrojanAcceptor::new(&trojan, fallback_config, tls_acceptor)?;
                         if let Some(mux) = config.mux {
                             let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
                             run_proxy(mux_acceptor, direct_connector).await?;
@@ -104,7 +97,7 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
                             "VLESS server requires [websocket]",
                         )
                     })?;
-                    let ws_acceptor = WebSocketAcceptor::new_strict(&websocket, camouflage_acceptor)?;
+                    let ws_acceptor = WebSocketAcceptor::new_strict(&websocket, fallback_config, tls_acceptor)?;
                     let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
                     run_proxy(vless_acceptor, direct_connector).await?;
                 }
@@ -122,25 +115,25 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             let config: ClientConfig = toml::from_str(&config_string).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let socks5_acceptor = Socks5Acceptor::new(&config.socks5).await?;
             let tls_connector = TrojanTlsConnector::new(&config.tls)?;
-            if config.websocket.is_none() {
-                let trojan_connector = TrojanConnector::new(&config.trojan, tls_connector)?;
-                if config.mux.is_none() {
-                    run_proxy(socks5_acceptor, trojan_connector).await?;
-                } else {
+            if let Some(ws_config) = &config.websocket {
+                let ws_connector =
+                    WebSocketConnector::new(ws_config, tls_connector)?;
+                let trojan_connector = TrojanConnector::new(&config.trojan, ws_connector)?;
+                if let Some(mux_config) = &config.mux {
                     let mux_connector =
-                        MuxConnector::new(&config.mux.unwrap(), trojan_connector).unwrap();
+                        MuxConnector::new(mux_config, trojan_connector).unwrap();
                     run_proxy(socks5_acceptor, mux_connector).await?;
+                } else {
+                    run_proxy(socks5_acceptor, trojan_connector).await?;
                 }
             } else {
-                let ws_connector =
-                    WebSocketConnector::new(&config.websocket.unwrap(), tls_connector)?;
-                let trojan_connector = TrojanConnector::new(&config.trojan, ws_connector)?;
-                if config.mux.is_none() {
-                    run_proxy(socks5_acceptor, trojan_connector).await?;
-                } else {
+                let trojan_connector = TrojanConnector::new(&config.trojan, tls_connector)?;
+                if let Some(mux_config) = &config.mux {
                     let mux_connector =
-                        MuxConnector::new(&config.mux.unwrap(), trojan_connector).unwrap();
+                        MuxConnector::new(mux_config, trojan_connector).unwrap();
                     run_proxy(socks5_acceptor, mux_connector).await?;
+                } else {
+                    run_proxy(socks5_acceptor, trojan_connector).await?;
                 }
             }
         }

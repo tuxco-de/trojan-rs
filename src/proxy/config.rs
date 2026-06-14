@@ -1,6 +1,6 @@
 use serde::Deserialize;
 use crate::protocol::{
-    camouflage::CamouflageConfig,
+    fallback::FallbackConfig,
     mux::{
         acceptor::MuxAcceptorConfig,
         connector::MuxConnectorConfig,
@@ -41,7 +41,7 @@ pub struct ServerConfig {
     pub trojan: Option<TrojanAcceptorConfig>,
     pub vless: Option<VlessAcceptorConfig>,
     pub tls: TrojanTlsAcceptorConfig,
-    pub camouflage: Option<CamouflageConfig>,
+    pub fallback: Option<FallbackConfig>,
     pub websocket: Option<WebSocketAcceptorConfig>,
     pub mux: Option<MuxAcceptorConfig>,
 }

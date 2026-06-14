@@ -1,4 +1,5 @@
 use super::{new_error, BinaryWsStream};
+use crate::protocol::fallback::{FallbackConfig, FallbackPage};
 use crate::protocol::{AcceptResult, DummyUdpStream, ProxyAcceptor, ProxyTcpStream};
 use async_trait::async_trait;
 use bytes::{Buf, Bytes};
@@ -66,11 +67,6 @@ pub struct WebSocketAcceptorConfig {
     max_write_buffer_size: usize,
 }
 
-impl WebSocketAcceptorConfig {
-    pub(crate) fn path(&self) -> &str {
-        &self.path
-    }
-}
 
 struct WebSocketCallback {
     path: String,
@@ -206,6 +202,7 @@ pub struct WebSocketAcceptor<T: ProxyAcceptor> {
     max_handshake_size: usize,
     websocket_config: WebSocketConfig,
     allow_raw: bool,
+    fallback: Option<FallbackPage>,
     inner: T,
 }
 
@@ -215,61 +212,79 @@ impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
     type US = DummyUdpStream;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
-        let (mut stream, addr) = self.inner.accept().await?.unwrap_tcp_with_addr();
-        let request_head = timeout(
-            self.handshake_timeout,
-            read_request_head(&mut stream, self.max_handshake_size),
-        )
-        .await
-        .map_err(|_| new_error("websocket handshake timed out"))??;
+        loop {
+            let (mut stream, addr) = self.inner.accept().await?.unwrap_tcp_with_addr();
+            let request_head = timeout(
+                self.handshake_timeout,
+                read_request_head(&mut stream, self.max_handshake_size),
+            )
+            .await
+            .map_err(|_| new_error("websocket handshake timed out"))??;
 
-        let is_websocket = is_trojan_go_websocket_request(&request_head, &self.path);
-        let prefixed = PrefixedStream::new(request_head, stream);
-        if !is_websocket {
-            if !self.allow_raw {
-                return Err(new_error("websocket upgrade required"));
+            let is_websocket = is_trojan_go_websocket_request(&request_head, &self.path);
+            if !is_websocket {
+                if !self.allow_raw {
+                    if let Some(ref fallback) = self.fallback {
+                        log::info!("serving fallback page to {}", addr);
+                        fallback.serve(stream, request_head);
+                        continue;
+                    }
+                    return Err(new_error("websocket upgrade required"));
+                }
+                let prefixed = PrefixedStream::new(request_head, stream);
+                return Ok(AcceptResult::Tcp((
+                    TrojanGoWebSocketStream::Raw(prefixed),
+                    addr,
+                )));
             }
+
+            let prefixed = PrefixedStream::new(request_head, stream);
+            let stream = timeout(
+                self.handshake_timeout,
+                accept_hdr_async_with_config(
+                    prefixed,
+                    WebSocketCallback {
+                        path: self.path.clone(),
+                    },
+                    Some(self.websocket_config),
+                ),
+            )
+            .await
+            .map_err(|_| new_error("websocket handshake timed out"))?
+            .map_err(new_error)?;
             return Ok(AcceptResult::Tcp((
-                TrojanGoWebSocketStream::Raw(prefixed),
+                TrojanGoWebSocketStream::WebSocket(Box::new(BinaryWsStream::new(stream))),
                 addr,
             )));
         }
-
-        let stream = timeout(
-            self.handshake_timeout,
-            accept_hdr_async_with_config(
-                prefixed,
-                WebSocketCallback {
-                    path: self.path.clone(),
-                },
-                Some(self.websocket_config),
-            ),
-        )
-        .await
-        .map_err(|_| new_error("websocket handshake timed out"))?
-        .map_err(new_error)?;
-        Ok(AcceptResult::Tcp((
-            TrojanGoWebSocketStream::WebSocket(Box::new(BinaryWsStream::new(stream))),
-            addr,
-        )))
     }
 }
 
 impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
-    pub fn new(config: &WebSocketAcceptorConfig, inner: T) -> io::Result<Self> {
-        Self::new_with_raw_fallback(config, inner, true)
-    }
-
-    pub fn new_strict(config: &WebSocketAcceptorConfig, inner: T) -> io::Result<Self> {
-        Self::new_with_raw_fallback(config, inner, false)
-    }
-
-    fn new_with_raw_fallback(
+    pub fn new(
         config: &WebSocketAcceptorConfig,
+        fallback_config: Option<&FallbackConfig>,
+        inner: T,
+    ) -> io::Result<Self> {
+        Self::new_inner(config, fallback_config, inner, true)
+    }
+
+    pub fn new_strict(
+        config: &WebSocketAcceptorConfig,
+        fallback_config: Option<&FallbackConfig>,
+        inner: T,
+    ) -> io::Result<Self> {
+        Self::new_inner(config, fallback_config, inner, false)
+    }
+
+    fn new_inner(
+        config: &WebSocketAcceptorConfig,
+        fallback_config: Option<&FallbackConfig>,
         inner: T,
         allow_raw: bool,
     ) -> io::Result<Self> {
         validate_config(config)?;
+        let fallback = FallbackPage::new(fallback_config)?;
         let websocket_config = WebSocketConfig::default()
             .read_buffer_size(config.read_buffer_size)
             .write_buffer_size(config.write_buffer_size)
@@ -283,6 +298,7 @@ impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
             max_handshake_size: config.max_handshake_size,
             websocket_config,
             allow_raw,
+            fallback,
         })
     }
 }
