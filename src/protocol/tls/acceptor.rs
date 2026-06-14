@@ -54,12 +54,14 @@ impl TrojanTlsAcceptor {
         let mut provider = tokio_rustls::rustls::crypto::ring::default_provider();
         provider.cipher_suites = cipher_suites;
 
-        let tls_config = ServerConfig::builder_with_provider(Arc::new(provider))
+        let mut tls_config = ServerConfig::builder_with_provider(Arc::new(provider))
             .with_safe_default_protocol_versions()
             .map_err(|e| new_error(format!("tls version error {}", e)))?
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .map_err(|e| new_error(format!("invalid cert {}", e)))?;
+
+        tls_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
         Ok(Self {
