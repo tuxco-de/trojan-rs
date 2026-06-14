@@ -1,16 +1,10 @@
 default:
 	cargo build --release
 
-x86_64-unknown-linux-musl:
+x86_64-unknown-linux-gnu:
 	cargo build --target $@ --release
 
-armv7-unknown-linux-musleabihf:
-	cross build --target $@ --release
-
-arm-unknown-linux-musleabihf:
-	cross build --target $@ --release
-
-aarch64-unknown-linux-musl:
+aarch64-unknown-linux-gnu:
 	cross build --target $@ --release
 
 aarch64-linux-android:

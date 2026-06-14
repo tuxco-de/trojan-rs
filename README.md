@@ -8,18 +8,18 @@
 
 - 专为 NAT VPS 优化
 
-    极度缩减的二进制文件体积（无调试符号表下仅约 ~2.8MB），彻底去除正则引擎等无关依赖，禁用所有非核心功能。在内存只有 128MB 甚至 64MB 的低端 NAT 小鸡上也能丝滑流畅运行，保持极低的资源消耗与极佳的稳定性。
+    保持单文件部署与较小的运行时内存占用，彻底去除正则引擎等无关依赖，禁用所有非核心功能。在内存只有 128MB 甚至 64MB 的低端 NAT 主机上也能运行。
 
 - 丰富的协议解析与承载
 
     原生支持多种主流代理协议与传输层组合的解析和转发：
     - **核心协议**: 支持 `Trojan`、`VLESS`、`Socks5` 协议栈。
     - **传输层**: 支持基础的 `Direct` (TCP/UDP 直连) 和抗阻断的 `WebSocket` (WS/WSS)。
-    - **安全层**: 支持基于 `rustls` 的 `TLS` 加密承载，以及主动探测防御的协议回落 (Fallback)。
+    - **安全层**: 支持基于静态链接 `BoringSSL` 的 `TLS` 加密承载，以及主动探测防御的协议回落 (Fallback)。
 
 - 极致性能
 
-    牺牲部分灵活性，采用激进的性能优化策略以极力减少不必要的开销。采用[更高效](https://jbp.io/2019/07/01/rustls-vs-openssl-performance.html)的 `rustls` （相较 openssl）建立 TLS 隧道以提升加解密的性能表现。
+    牺牲部分灵活性，采用激进的性能优化策略以极力减少不必要的开销。TLS 由 BoringSSL 提供，并直接集成到异步 Tokio I/O 路径中。
     使用 tokio 异步运行时，允许 `Trojan-rs` 同时使用所有 CPU 核心，保证低时延和高效的吞吐能力。
 
 - 低内存占用
@@ -36,12 +36,11 @@
 
 - 密码学安全
 
-    使用 `rustls` 建立 TLS 加密安全信道，过时的或不安全的密码学套件[均被禁用](https://docs.rs/rustls/0.18.1/rustls/#non-features)。`Trojan-rs` 强制开启服务器证书校验以防止中间人攻击。
+    使用 `BoringSSL` 建立 TLS 加密安全信道，最低协议版本为 TLS 1.2。`Trojan-rs` 强制开启服务器证书与主机名校验以防止中间人攻击。
 
 - 隐蔽传输
 
-    `Trojan-rs` 使用 TLS 建立代理隧道，难以从正常 TLS 流量中被区分。支持协议回落，在遭到主动探测时将与普通 TLS 服务器表现一致。
-    客户端支持 uTLS 风格的 ClientHello 指纹模拟。在 `[tls]` 配置中设置 `fingerprint = "chrome"` 即可启用；当前支持 `chrome`、`chrome_108`、`firefox` 和 `safari`。启用后浏览器指纹会接管密码套件顺序，因此 `cipher` 配置将被忽略。
+    `Trojan-rs` 使用 TLS 建立代理隧道，并支持协议回落。客户端与服务端统一使用 BoringSSL 的原生握手行为，不再提供过期的浏览器 ClientHello 模板。
 
 - 跨平台支持
 
@@ -109,10 +108,18 @@ sudo ./install.sh
 cargo build --release
 ```
 
-交叉编译基于 `cross` 完成，编译前请确认已经安装 `cross` (`cargo install cross`)
+BoringSSL 源码由 `boring-sys` 在构建时编译，并以静态库链接到最终程序。构建机需要 CMake、Clang、libclang，以及目标平台可用的 C/C++ 工具链；x86/x86_64 构建还需要 NASM。
+
+Ubuntu/Debian 构建依赖示例：
 
 ```shell
-make armv7-unknown-linux-musleabihf
+sudo apt-get install -y build-essential cmake clang libclang-dev ninja-build
+```
+
+交叉编译基于 `cross` 完成，编译镜像同样必须包含上述 BoringSSL 构建工具链。默认发布目标使用 glibc；BoringSSL 本身仍为静态链接。
+
+```shell
+make aarch64-unknown-linux-gnu
 ```
 
 编译默认开启链接时优化，以提升性能并减小可执行文件体积，因此编译耗时可能较其他项目更长。

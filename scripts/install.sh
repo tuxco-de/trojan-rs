@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.8"
+SCRIPT_VERSION="1.2.0"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----

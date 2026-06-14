@@ -1,139 +1,82 @@
-use crate::protocol::{Address, DummyUdpStream, ProxyConnector, ProxyTcpStream};
+use crate::protocol::{Address, DummyUdpStream, ProxyConnector};
 use async_trait::async_trait;
-use rustls_pki_types::ServerName;
-use serde::Deserialize;
-use std::{io, path::Path, sync::Arc};
-use tokio::net::TcpStream;
-use tokio_rustls::{
-    client::TlsStream,
-    rustls::{
-        craft::{CHROME_108, CHROME_112, FIREFOX_105, SAFARI_17_1},
-        ClientConfig,
-    },
-    TlsConnector,
+use boring::{
+    ssl::{SslConnector, SslMethod, SslVersion},
+    x509::{store::X509StoreBuilder, X509},
 };
+use serde::Deserialize;
+use std::{fs, io};
+use tokio::net::TcpStream;
+use tokio_boring::SslStream;
 
-use super::{get_cipher_suite, load_cert};
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-enum TlsFingerprint {
-    #[serde(rename = "chrome_108")]
-    Chrome108,
-    #[serde(rename = "chrome_112", alias = "chrome")]
-    Chrome112,
-    #[serde(rename = "firefox_105", alias = "firefox")]
-    Firefox105,
-    #[serde(rename = "safari_17_1", alias = "safari")]
-    Safari171,
-}
-
-impl TlsFingerprint {
-    fn apply(self, config: ClientConfig) -> ClientConfig {
-        match self {
-            Self::Chrome108 => config.with_fingerprint(CHROME_108.builder()),
-            Self::Chrome112 => config.with_fingerprint(CHROME_112.builder()),
-            Self::Firefox105 => config.with_fingerprint(FIREFOX_105.builder()),
-            Self::Safari171 => config.with_fingerprint(SAFARI_17_1.builder()),
-        }
-    }
-}
+use super::{get_cipher_list, new_error};
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrojanTlsConnectorConfig {
     addr: String,
     sni: String,
     cipher: Option<Vec<String>>,
     cert: Option<String>,
-    #[serde(alias = "utls", alias = "utls_fingerprint")]
-    fingerprint: Option<TlsFingerprint>,
 }
 
 pub struct TrojanTlsConnector {
     sni: String,
     server_addr: String,
-    tls_config: Arc<ClientConfig>,
+    tls_connector: SslConnector,
 }
-
-impl ProxyTcpStream for TlsStream<TcpStream> {}
 
 impl TrojanTlsConnector {
     pub fn new(config: &TrojanTlsConnectorConfig) -> io::Result<Self> {
-        let cipher_suites = if config.fingerprint.is_some() {
-            if config.cipher.is_some() {
-                log::warn!("tls cipher configuration is ignored when fingerprint is enabled");
+        let mut builder = SslConnector::builder(SslMethod::tls()).map_err(new_error)?;
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_2))
+            .map_err(new_error)?;
+        builder
+            .set_alpn_protos(b"\x08http/1.1")
+            .map_err(new_error)?;
+        if let Some(cipher_list) = get_cipher_list(config.cipher.as_deref())? {
+            builder
+                .set_strict_cipher_list(&cipher_list)
+                .map_err(new_error)?;
+        }
+
+        let mut roots = X509StoreBuilder::new().map_err(new_error)?;
+        if let Some(cert_path) = config.cert.as_deref() {
+            let pem = fs::read(cert_path)?;
+            let certs = X509::stack_from_pem(&pem).map_err(new_error)?;
+            if certs.is_empty() {
+                return Err(new_error("no certificates found in custom CA file"));
             }
-            get_cipher_suite(None)?
-        } else {
-            get_cipher_suite(config.cipher.clone())?
-        };
-        let mut provider = tokio_rustls::rustls::crypto::ring::default_provider();
-        provider.cipher_suites = cipher_suites;
-
-        let builder = ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| io::Error::other(e.to_string()))?;
-
-        let mut root_store = tokio_rustls::rustls::RootCertStore::empty();
-
-        if let Some(ref cert_path) = config.cert {
-            let cert_path = Path::new(cert_path);
-            let certs = load_cert(cert_path)?;
             for cert in certs {
-                root_store.add(cert).unwrap();
+                roots.add_cert(cert).map_err(new_error)?;
             }
         } else {
-            root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            for cert in webpki_root_certs::TLS_SERVER_ROOT_CERTS {
+                let cert = X509::from_der(cert.as_ref()).map_err(new_error)?;
+                roots.add_cert(cert).map_err(new_error)?;
+            }
         }
-
-        let mut tls_config = builder
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-        if let Some(fingerprint) = config.fingerprint {
-            tls_config = fingerprint.apply(tls_config);
-            log::debug!("tls fingerprint: {:?}", fingerprint);
-        }
+        builder
+            .set_verify_cert_store(roots.build())
+            .map_err(new_error)?;
 
         Ok(Self {
             sni: config.sni.clone(),
             server_addr: config.addr.clone(),
-            tls_config: Arc::new(tls_config),
+            tls_connector: builder.build(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{TlsFingerprint, TrojanTlsConnector, TrojanTlsConnectorConfig};
+    use super::TrojanTlsConnectorConfig;
 
     #[test]
-    fn supports_utls_fingerprint_aliases() {
-        let cases = [
-            ("chrome", TlsFingerprint::Chrome112),
-            ("chrome_108", TlsFingerprint::Chrome108),
-            ("firefox", TlsFingerprint::Firefox105),
-            ("safari", TlsFingerprint::Safari171),
-        ];
-
-        for (name, expected) in cases {
-            let config: TrojanTlsConnectorConfig = toml::from_str(&format!(
-                "addr = \"example.com:443\"\nsni = \"example.com\"\nfingerprint = \"{name}\""
-            ))
-            .unwrap();
-            assert_eq!(config.fingerprint, Some(expected));
-            TrojanTlsConnector::new(&config).unwrap();
-        }
-
-        let config: TrojanTlsConnectorConfig =
-            toml::from_str("addr = \"example.com:443\"\nsni = \"example.com\"\nutls = \"firefox\"")
-                .unwrap();
-        assert_eq!(config.fingerprint, Some(TlsFingerprint::Firefox105));
-    }
-
-    #[test]
-    fn rejects_unknown_utls_fingerprint() {
+    fn rejects_removed_fingerprint_option() {
         let result = toml::from_str::<TrojanTlsConnectorConfig>(
-            "addr = \"example.com:443\"\nsni = \"example.com\"\nfingerprint = \"edge\"",
+            "addr = \"example.com:443\"\nsni = \"example.com\"\nfingerprint = \"chrome\"",
         );
         assert!(result.is_err());
     }
@@ -141,19 +84,17 @@ mod tests {
 
 #[async_trait]
 impl ProxyConnector for TrojanTlsConnector {
-    type TS = TlsStream<TcpStream>;
+    type TS = SslStream<TcpStream>;
     type US = DummyUdpStream;
 
     async fn connect_tcp(&self, _: &Address) -> io::Result<Self::TS> {
         let stream = TcpStream::connect(&self.server_addr).await?;
         stream.set_nodelay(true)?;
 
-        let dns_name = ServerName::try_from(self.sni.clone())
-            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e.to_string()))?
-            .to_owned();
-        let stream = TlsConnector::from(self.tls_config.clone())
-            .connect(dns_name, stream)
-            .await?;
+        let tls_config = self.tls_connector.configure().map_err(new_error)?;
+        let stream = tokio_boring::connect(tls_config, &self.sni, stream)
+            .await
+            .map_err(new_error)?;
 
         log::info!("connected to {}", self.server_addr);
         Ok(stream)

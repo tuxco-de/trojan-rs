@@ -1,16 +1,13 @@
 use crate::protocol::{
-    tls::{get_cipher_suite, load_cert, load_key, new_error},
+    tls::{get_cipher_list, new_error},
     AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream,
 };
 use async_trait::async_trait;
+use boring::ssl::{select_next_proto, AlpnError, SslAcceptor, SslFiletype, SslMethod, SslVersion};
 use serde::Deserialize;
-use std::{io, path::Path, sync::Arc};
+use std::io;
 use tokio::net::{TcpListener, TcpStream};
-use tokio_rustls::{
-    rustls::ServerConfig,
-    server::TlsStream,
-    TlsAcceptor,
-};
+use tokio_boring::SslStream;
 
 #[derive(Deserialize)]
 pub struct TrojanTlsAcceptorConfig {
@@ -21,21 +18,23 @@ pub struct TrojanTlsAcceptorConfig {
 }
 
 pub struct TrojanTlsAcceptor {
-    tls_acceptor: TlsAcceptor,
+    tls_acceptor: SslAcceptor,
     tcp_listener: TcpListener,
 }
 
-impl ProxyTcpStream for TlsStream<TcpStream> {}
+impl ProxyTcpStream for SslStream<TcpStream> {}
 
 #[async_trait]
 impl ProxyAcceptor for TrojanTlsAcceptor {
-    type TS = TlsStream<TcpStream>;
+    type TS = SslStream<TcpStream>;
     type US = DummyUdpStream;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         let (stream, addr) = self.tcp_listener.accept().await?;
         log::info!("tcp connection from {}", addr);
-        let stream = self.tls_acceptor.accept(stream).await?;
+        let stream = tokio_boring::accept(&self.tls_acceptor, stream)
+            .await
+            .map_err(new_error)?;
         Ok(AcceptResult::Tcp((stream, Address::SocketAddress(addr))))
     }
 }
@@ -45,25 +44,28 @@ impl TrojanTlsAcceptor {
         let tcp_listener = TcpListener::bind(config.addr.to_owned()).await?;
         log::debug!("tls listen addr = {}", config.addr);
 
-        let cert_path = Path::new(&config.cert);
-        let key_path = Path::new(&config.key);
-        let certs = load_cert(cert_path)?;
-        let key = load_key(key_path)?;
+        let mut builder =
+            SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).map_err(new_error)?;
+        builder
+            .set_min_proto_version(Some(SslVersion::TLS1_2))
+            .map_err(new_error)?;
+        builder
+            .set_certificate_chain_file(&config.cert)
+            .map_err(new_error)?;
+        builder
+            .set_private_key_file(&config.key, SslFiletype::PEM)
+            .map_err(new_error)?;
+        builder.check_private_key().map_err(new_error)?;
+        if let Some(cipher_list) = get_cipher_list(config.cipher.as_deref())? {
+            builder
+                .set_strict_cipher_list(&cipher_list)
+                .map_err(new_error)?;
+        }
+        builder.set_alpn_select_callback(|_, client| {
+            select_next_proto(b"\x08http/1.1", client).ok_or(AlpnError::NOACK)
+        });
 
-        let cipher_suites = get_cipher_suite(config.cipher.clone())?;
-        let mut provider = tokio_rustls::rustls::crypto::ring::default_provider();
-        provider.cipher_suites = cipher_suites;
-
-        let mut tls_config = ServerConfig::builder_with_provider(Arc::new(provider))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| new_error(format!("tls version error {}", e)))?
-            .with_no_client_auth()
-            .with_single_cert(certs, key)
-            .map_err(|e| new_error(format!("invalid cert {}", e)))?;
-
-        tls_config.alpn_protocols = vec![b"http/1.1".to_vec()];
-
-        let tls_acceptor = TlsAcceptor::from(Arc::new(tls_config));
+        let tls_acceptor = builder.build();
         Ok(Self {
             tcp_listener,
             tls_acceptor,
