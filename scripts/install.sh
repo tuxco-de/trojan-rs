@@ -477,9 +477,7 @@ download_bin() {
     local extracted_bin
     local is_musl=""
     arch=$(uname -m)
-    if command_exists apk; then
-        is_musl="-musl"
-    fi
+    is_musl="-musl"
     case "$arch" in
         x86_64|amd64) asset_name="trojan-rs-server-linux${is_musl}-amd64.tar.gz" ;;
         aarch64|arm64) asset_name="trojan-rs-server-linux${is_musl}-arm64.tar.gz" ;;

@@ -193,14 +193,15 @@ fn new_key<T>(map: &HashMap<u32, T>, hint: &AtomicU32) -> u32 {
     }
 }
 
+type WriteFuture = Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>;
+
 pub struct MuxStream {
     tx: Sender<MuxFrame>,
     stream_id: u32,
     rx: Receiver<PushFrame>,
     read_buffer: Option<Bytes>,
     write_buffer: Option<Bytes>,
-    write_future:
-        Option<Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>>,
+    write_future: Option<WriteFuture>,
     closed: Arc<AtomicBool>,
 }
 

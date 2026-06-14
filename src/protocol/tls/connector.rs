@@ -108,7 +108,7 @@ impl ProxyConnector for TrojanTlsConnector {
     }
 
     async fn connect_udp(&self) -> io::Result<Self::US> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }
 

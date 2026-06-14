@@ -60,7 +60,7 @@ impl MuxAcceptor {
                 match result {
                     AcceptResult::Tcp((stream, addr)) => {
                         let accept_stream_tx = accept_stream_tx.clone();
-                        let _: JoinHandle<io::Result<()>> = tokio::spawn(async move {
+                        let _handle: JoinHandle<io::Result<()>> = tokio::spawn(async move {
                             let valid_magic_addr = {
                                 match &addr {
                                     Address::DomainNameAddress(domain, port) => {

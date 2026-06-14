@@ -74,7 +74,7 @@ pub struct DummyUdpRead {}
 #[async_trait]
 impl UdpRead for DummyUdpRead {
     async fn read_from(&mut self, _: &mut [u8]) -> io::Result<(usize, Address)> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }
 
@@ -83,7 +83,7 @@ pub struct DummyUdpWrite {}
 #[async_trait]
 impl UdpWrite for DummyUdpWrite {
     async fn write_to(&mut self, _: &[u8], _: &Address) -> io::Result<()> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }
 
@@ -92,14 +92,14 @@ pub struct DummyUdpStream {}
 #[async_trait]
 impl UdpRead for DummyUdpStream {
     async fn read_from(&mut self, _: &mut [u8]) -> io::Result<(usize, Address)> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }
 
 #[async_trait]
 impl UdpWrite for DummyUdpStream {
     async fn write_to(&mut self, _: &[u8], _: &Address) -> io::Result<()> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }
 
@@ -108,12 +108,12 @@ impl ProxyUdpStream for DummyUdpStream {
     type R = DummyUdpRead;
     type W = DummyUdpWrite;
     fn split(self) -> (Self::R, Self::W) {
-        unimplemented!()
+        unreachable!()
     }
     fn reunite(_: Self::R, _: Self::W) -> Self {
-        unimplemented!()
+        unreachable!()
     }
     async fn close(self) -> io::Result<()> {
-        unimplemented!()
+        Err(io::Error::new(io::ErrorKind::Unsupported, "unimplemented"))
     }
 }

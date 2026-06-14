@@ -1,364 +1,243 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>IP Lookup — What Is My IP Address?</title>
-  <meta name="description" content="Instantly find your public IP address, geolocation, ISP, and network details.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <style>
-    *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Coming Soon | Crafting the Future</title>
+    <meta name="description" content="We are currently building something extraordinary. Stay tuned for our upcoming launch.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --bg-color: #030712;
+            --surface: rgba(17, 24, 39, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-main: #f9fafb;
+            --text-muted: #9ca3af;
+            --primary: #3b82f6;
+            --accent: #8b5cf6;
+            --glow: rgba(139, 92, 246, 0.4);
+            --radius: 20px;
+        }
 
-    :root{
-      --bg:#0b0f1a;
-      --surface:rgba(255,255,255,.04);
-      --surface-hover:rgba(255,255,255,.07);
-      --border:rgba(255,255,255,.08);
-      --text:#e4e6eb;
-      --text-secondary:rgba(228,230,235,.55);
-      --accent:#6c5ce7;
-      --accent-light:#a29bfe;
-      --gradient:linear-gradient(135deg,#6c5ce7 0%,#00cec9 100%);
-      --glow:0 0 80px rgba(108,92,231,.25);
-      --radius:16px;
-      --font:'Inter',system-ui,-apple-system,sans-serif;
-    }
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
 
-    html{font-size:16px}
+        body {
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+            position: relative;
+        }
 
-    body{
-      min-height:100vh;
-      font-family:var(--font);
-      color:var(--text);
-      background:var(--bg);
-      display:flex;
-      flex-direction:column;
-      align-items:center;
-      padding:0 20px;
-      overflow-x:hidden;
-    }
+        /* Ambient Background Orbs */
+        .ambient-orb {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(120px);
+            z-index: 0;
+            animation: float 20s infinite ease-in-out alternate;
+            pointer-events: none;
+        }
 
-    /* Animated gradient background orbs */
-    body::before,body::after{
-      content:'';position:fixed;border-radius:50%;filter:blur(120px);opacity:.35;pointer-events:none;z-index:0;
-    }
-    body::before{width:600px;height:600px;background:#6c5ce7;top:-180px;left:-120px;animation:float 18s ease-in-out infinite alternate}
-    body::after{width:500px;height:500px;background:#00cec9;bottom:-150px;right:-100px;animation:float 22s ease-in-out infinite alternate-reverse}
+        .orb-1 {
+            width: 500px;
+            height: 500px;
+            background: var(--accent);
+            top: -200px;
+            left: -150px;
+            opacity: 0.3;
+        }
 
-    @keyframes float{0%{transform:translate(0,0) scale(1)}50%{transform:translate(60px,40px) scale(1.1)}100%{transform:translate(-30px,70px) scale(.95)}}
+        .orb-2 {
+            width: 600px;
+            height: 600px;
+            background: var(--primary);
+            bottom: -250px;
+            right: -200px;
+            opacity: 0.25;
+            animation-delay: -5s;
+            animation-direction: alternate-reverse;
+        }
 
-    header{
-      position:relative;z-index:1;
-      text-align:center;
-      margin-top:clamp(48px,10vh,96px);
-      margin-bottom:40px;
-    }
+        @keyframes float {
+            0% { transform: translate(0, 0) scale(1); }
+            50% { transform: translate(80px, 50px) scale(1.1); }
+            100% { transform: translate(-40px, 90px) scale(0.95); }
+        }
 
-    header h1{
-      font-size:clamp(1.6rem,4vw,2.4rem);
-      font-weight:700;
-      letter-spacing:-.03em;
-      background:var(--gradient);
-      -webkit-background-clip:text;
-      -webkit-text-fill-color:transparent;
-      background-clip:text;
-    }
+        /* Glassmorphism Container */
+        .container {
+            position: relative;
+            z-index: 10;
+            width: 90%;
+            max-width: 600px;
+            background: var(--surface);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid var(--border-color);
+            border-radius: var(--radius);
+            padding: 4rem 3rem;
+            text-align: center;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5), 0 0 40px var(--glow);
+            animation: slideUp 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
+        }
 
-    header p{
-      margin-top:8px;
-      font-size:.95rem;
-      color:var(--text-secondary);
-    }
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(40px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
 
-    /* IP hero card */
-    .ip-hero{
-      position:relative;z-index:1;
-      width:100%;
-      max-width:560px;
-      padding:36px 32px;
-      background:var(--surface);
-      border:1px solid var(--border);
-      border-radius:var(--radius);
-      backdrop-filter:blur(24px);
-      -webkit-backdrop-filter:blur(24px);
-      box-shadow:var(--glow);
-      text-align:center;
-      margin-bottom:28px;
-      animation:slideUp .6s cubic-bezier(.22,1,.36,1) both;
-    }
+        /* Badge */
+        .badge {
+            display: inline-block;
+            padding: 0.4rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            color: var(--text-muted);
+            margin-bottom: 1.5rem;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
 
-    @keyframes slideUp{from{opacity:0;transform:translateY(30px)}to{opacity:1;transform:translateY(0)}}
+        /* Typography */
+        h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 700;
+            line-height: 1.1;
+            margin-bottom: 1.2rem;
+            background: linear-gradient(135deg, #ffffff 0%, #a5b4fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
 
-    .ip-hero .label{
-      font-size:.75rem;
-      font-weight:600;
-      text-transform:uppercase;
-      letter-spacing:.12em;
-      color:var(--text-secondary);
-      margin-bottom:12px;
-    }
+        p {
+            font-size: 1.1rem;
+            color: var(--text-muted);
+            line-height: 1.6;
+            margin-bottom: 2.5rem;
+        }
 
-    .ip-hero .ip-address{
-      font-size:clamp(1.8rem,5vw,2.6rem);
-      font-weight:700;
-      letter-spacing:-.02em;
-      color:#fff;
-      word-break:break-all;
-      min-height:1.2em;
-    }
+        /* Notify Form */
+        .notify-form {
+            display: flex;
+            gap: 0.5rem;
+            width: 100%;
+            max-width: 400px;
+            margin: 0 auto;
+            position: relative;
+        }
 
-    .ip-hero .ip-address.loading{
-      background:linear-gradient(90deg,var(--surface) 25%,var(--surface-hover) 50%,var(--surface) 75%);
-      background-size:200% 100%;
-      animation:shimmer 1.5s infinite;
-      border-radius:8px;
-      color:transparent;
-      user-select:none;
-    }
+        input {
+            flex: 1;
+            padding: 1rem 1.2rem;
+            background: rgba(0, 0, 0, 0.2);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            color: var(--text-main);
+            font-family: inherit;
+            font-size: 0.95rem;
+            outline: none;
+            transition: all 0.3s ease;
+        }
 
-    @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+        input::placeholder {
+            color: #6b7280;
+        }
 
-    .ip-hero .location{
-      margin-top:10px;
-      font-size:.9rem;
-      color:var(--text-secondary);
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      gap:6px;
-      min-height:1.4em;
-    }
+        input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.2);
+        }
 
-    .ip-hero .location .flag{font-size:1.2rem}
+        button {
+            padding: 0 1.5rem;
+            background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+            border: none;
+            border-radius: 12px;
+            color: white;
+            font-family: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
 
-    /* Detail cards grid */
-    .details{
-      position:relative;z-index:1;
-      width:100%;
-      max-width:560px;
-      display:grid;
-      grid-template-columns:1fr 1fr;
-      gap:12px;
-      margin-bottom:60px;
-      animation:slideUp .6s cubic-bezier(.22,1,.36,1) .15s both;
-    }
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(139, 92, 246, 0.3);
+        }
 
-    .detail-card{
-      padding:20px;
-      background:var(--surface);
-      border:1px solid var(--border);
-      border-radius:12px;
-      backdrop-filter:blur(16px);
-      -webkit-backdrop-filter:blur(16px);
-      transition:background .25s,border-color .25s,transform .25s;
-    }
+        button:active {
+            transform: translateY(1px);
+        }
 
-    .detail-card:hover{
-      background:var(--surface-hover);
-      border-color:rgba(255,255,255,.12);
-      transform:translateY(-2px);
-    }
+        /* Footer */
+        .footer {
+            margin-top: 3rem;
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            animation: fadeIn 1s ease-in 0.8s both;
+        }
 
-    .detail-card .detail-label{
-      font-size:.7rem;
-      font-weight:600;
-      text-transform:uppercase;
-      letter-spacing:.1em;
-      color:var(--text-secondary);
-      margin-bottom:6px;
-    }
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
 
-    .detail-card .detail-value{
-      font-size:.95rem;
-      font-weight:500;
-      color:var(--text);
-      word-break:break-word;
-      min-height:1.2em;
-    }
-
-    .detail-value.loading{
-      background:linear-gradient(90deg,var(--surface) 25%,var(--surface-hover) 50%,var(--surface) 75%);
-      background-size:200% 100%;
-      animation:shimmer 1.5s infinite;
-      border-radius:6px;
-      color:transparent;
-      user-select:none;
-      width:80%;
-      height:1.2em;
-    }
-
-    /* Copy button */
-    .copy-btn{
-      margin-top:16px;
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
-      padding:8px 18px;
-      font-family:var(--font);
-      font-size:.8rem;
-      font-weight:600;
-      color:var(--accent-light);
-      background:rgba(108,92,231,.12);
-      border:1px solid rgba(108,92,231,.25);
-      border-radius:8px;
-      cursor:pointer;
-      transition:all .2s;
-    }
-
-    .copy-btn:hover{
-      background:rgba(108,92,231,.2);
-      border-color:rgba(108,92,231,.4);
-      transform:translateY(-1px);
-    }
-
-    .copy-btn:active{transform:scale(.97)}
-
-    .copy-btn svg{width:14px;height:14px;fill:currentColor}
-
-    /* Footer */
-    footer{
-      position:relative;z-index:1;
-      margin-top:auto;
-      padding:24px 0;
-      font-size:.75rem;
-      color:var(--text-secondary);
-      text-align:center;
-    }
-
-    /* Error state */
-    .error-msg{
-      margin-top:10px;
-      font-size:.85rem;
-      color:#fd79a8;
-    }
-
-    /* Responsive */
-    @media(max-width:480px){
-      .details{grid-template-columns:1fr}
-      .ip-hero{padding:28px 20px}
-    }
-  </style>
+        /* Responsive */
+        @media (max-width: 480px) {
+            .container {
+                padding: 3rem 1.5rem;
+            }
+            .notify-form {
+                flex-direction: column;
+            }
+            button {
+                padding: 1rem;
+            }
+        }
+    </style>
 </head>
 <body>
-  <header>
-    <h1>IP Address Lookup</h1>
-    <p>Your connection details at a glance</p>
-  </header>
 
-  <div class="ip-hero" id="ip-hero">
-    <div class="label">Your Public IP Address</div>
-    <div class="ip-address loading" id="ip-display">000.000.000.000</div>
-    <div class="location" id="location-display"></div>
-    <button class="copy-btn" id="copy-btn" style="display:none" onclick="copyIP()">
-      <svg viewBox="0 0 24 24"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
-      <span id="copy-text">Copy</span>
-    </button>
-  </div>
+    <!-- Ambient Orbs -->
+    <div class="ambient-orb orb-1"></div>
+    <div class="ambient-orb orb-2"></div>
 
-  <div class="details" id="details">
-    <div class="detail-card">
-      <div class="detail-label">ISP / Organization</div>
-      <div class="detail-value loading" id="d-isp"></div>
+    <main class="container">
+        <div class="badge">Coming Soon</div>
+        <h1>Something<br>Extraordinary</h1>
+        <p>We're crafting a new digital experience. Enter your email to be the first to know when we launch.</p>
+        
+        <form class="notify-form" onsubmit="event.preventDefault(); alert('Thanks for subscribing!');">
+            <input type="email" placeholder="Enter your email address" required id="email-input">
+            <button type="submit">Notify Me</button>
+        </form>
+    </main>
+
+    <div class="footer">
+        &copy; <span id="year"></span> Our Project. All rights reserved.
     </div>
-    <div class="detail-card">
-      <div class="detail-label">ASN</div>
-      <div class="detail-value loading" id="d-asn"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">City</div>
-      <div class="detail-value loading" id="d-city"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">Region</div>
-      <div class="detail-value loading" id="d-region"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">Country</div>
-      <div class="detail-value loading" id="d-country"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">Timezone</div>
-      <div class="detail-value loading" id="d-tz"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">Latitude</div>
-      <div class="detail-value loading" id="d-lat"></div>
-    </div>
-    <div class="detail-card">
-      <div class="detail-label">Longitude</div>
-      <div class="detail-value loading" id="d-lon"></div>
-    </div>
-  </div>
 
-  <footer>&copy; 2026 IP Lookup Service &mdash; All rights reserved</footer>
-
-  <script>
-    const $ = id => document.getElementById(id);
-
-    function countryFlag(code) {
-      if (!code) return '';
-      return String.fromCodePoint(...[...code.toUpperCase()].map(c => 0x1F1E6 - 65 + c.charCodeAt(0)));
-    }
-
-    function set(id, value) {
-      const el = $(id);
-      el.classList.remove('loading');
-      el.textContent = value || '—';
-    }
-
-    async function fetchIP() {
-      try {
-        const res = await fetch('https://ipapi.co/json/');
-        if (!res.ok) throw new Error(res.statusText);
-        const d = await res.json();
-
-        const ipEl = $('ip-display');
-        ipEl.classList.remove('loading');
-        ipEl.textContent = d.ip || '—';
-
-        const flag = countryFlag(d.country_code);
-        $('location-display').innerHTML =
-          `<span class="flag">${flag}</span> ${d.city || ''}${d.city && d.region ? ', ' : ''}${d.region || ''}, ${d.country_name || ''}`;
-
-        set('d-isp', d.org);
-        set('d-asn', d.asn);
-        set('d-city', d.city);
-        set('d-region', d.region);
-        set('d-country', d.country_name);
-        set('d-tz', d.timezone);
-        set('d-lat', d.latitude != null ? String(d.latitude) : null);
-        set('d-lon', d.longitude != null ? String(d.longitude) : null);
-
-        $('copy-btn').style.display = '';
-      } catch (err) {
-        const ipEl = $('ip-display');
-        ipEl.classList.remove('loading');
-        ipEl.textContent = '—';
-        const errDiv = document.createElement('div');
-        errDiv.className = 'error-msg';
-        errDiv.textContent = 'Unable to retrieve IP information. Please try again later.';
-        $('ip-hero').appendChild(errDiv);
-
-        document.querySelectorAll('.detail-value.loading').forEach(el => {
-          el.classList.remove('loading');
-          el.textContent = '—';
-        });
-      }
-    }
-
-    function copyIP() {
-      const ip = $('ip-display').textContent;
-      if (!ip || ip === '—') return;
-      navigator.clipboard.writeText(ip).then(() => {
-        const btn = $('copy-text');
-        btn.textContent = 'Copied!';
-        setTimeout(() => btn.textContent = 'Copy', 1500);
-      });
-    }
-
-    fetchIP();
-  </script>
+    <script>
+        document.getElementById('year').textContent = new Date().getFullYear();
+    </script>
 </body>
 </html>
