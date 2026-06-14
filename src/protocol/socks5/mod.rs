@@ -235,7 +235,10 @@ struct UdpAssociateHeader {
 impl UdpAssociateHeader {
     /// Creates a header
     fn new(frag: u8, address: Address) -> UdpAssociateHeader {
-        UdpAssociateHeader { _frag: frag, address }
+        UdpAssociateHeader {
+            _frag: frag,
+            address,
+        }
     }
 
     fn read_from_buf(buf: &[u8]) -> io::Result<UdpAssociateHeader> {

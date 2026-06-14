@@ -663,7 +663,7 @@ impl MuxHandle {
 
     async fn generate_stream_id(&self) -> u32 {
         let mux_map = self.mux_map.lock().await;
-        
+
         new_key(&mux_map, &self.stream_id_hint)
     }
 

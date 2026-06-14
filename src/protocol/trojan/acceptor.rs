@@ -41,11 +41,17 @@ impl<T: ProxyAcceptor> ProxyAcceptor for TrojanAcceptor<T> {
                 Err(e) => {
                     log::debug!("first packet {:x?}", first_packet);
                     if let Some(ref fallback) = self.fallback {
-                        log::warn!("invalid trojan request from {}, serving fallback page", addr);
+                        log::warn!(
+                            "invalid trojan request from {}, serving fallback page",
+                            addr
+                        );
                         fallback.serve(stream, first_packet);
                         continue;
                     }
-                    log::warn!("invalid trojan request from {}, no fallback configured", addr);
+                    log::warn!(
+                        "invalid trojan request from {}, no fallback configured",
+                        addr
+                    );
                     return Err(new_error(format!("invalid packet: {}", e)));
                 }
             }

@@ -6,7 +6,6 @@ use crate::protocol::fallback::{FallbackConfig, FallbackPage};
 use crate::protocol::{AcceptResult, DummyUdpStream, ProxyAcceptor, ProxyTcpStream};
 use async_trait::async_trait;
 use bytes::{Buf, Bytes};
-use log::error;
 use serde::Deserialize;
 use std::{
     io,
@@ -44,14 +43,10 @@ struct WebSocketCallback {
 impl Callback for WebSocketCallback {
     fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
         let date_str = httpdate::fmt_http_date(std::time::SystemTime::now());
-        
+
         if request.uri().path() != self.path.as_ref() {
             let mut resp = ErrorResponse::new(None);
             *resp.status_mut() = StatusCode::NOT_FOUND;
-            
-            if let Ok(val) = "nginx".parse() {
-                resp.headers_mut().insert("Server", val);
-            }
             if let Ok(val) = date_str.parse() {
                 resp.headers_mut().insert("Date", val);
             }
@@ -59,7 +54,7 @@ impl Callback for WebSocketCallback {
                 resp.headers_mut().insert("Connection", val);
             }
 
-            error!(
+            log::debug!(
                 "invalid websocket path: {}, expected: {}",
                 request.uri(),
                 self.path
@@ -67,9 +62,6 @@ impl Callback for WebSocketCallback {
             Err(resp)
         } else {
             let mut response = response;
-            if let Ok(val) = "nginx".parse() {
-                response.headers_mut().insert("Server", val);
-            }
             if let Ok(val) = date_str.parse() {
                 response.headers_mut().insert("Date", val);
             }
@@ -355,17 +347,39 @@ fn is_trojan_go_websocket_request(request: &[u8], expected_path: &str) -> bool {
     let path_matches = parsed
         .path
         .is_some_and(|path| path.split_once('?').map_or(path, |(path, _)| path) == expected_path);
-    let has_upgrade = parsed.headers.iter().any(|header| {
-        header.name.eq_ignore_ascii_case("upgrade")
-            && std::str::from_utf8(header.value)
-                .map(|value| {
-                    value
-                        .split(',')
-                        .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
-                })
-                .unwrap_or(false)
-    });
-    path_matches && has_upgrade
+    let header_has_token = |name: &str, expected: &str| {
+        parsed.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case(name)
+                && std::str::from_utf8(header.value)
+                    .map(|value| {
+                        value
+                            .split(',')
+                            .any(|token| token.trim().eq_ignore_ascii_case(expected))
+                    })
+                    .unwrap_or(false)
+        })
+    };
+    let header_equals = |name: &str, expected: &str| {
+        parsed.headers.iter().any(|header| {
+            header.name.eq_ignore_ascii_case(name)
+                && std::str::from_utf8(header.value)
+                    .map(|value| value.trim().eq_ignore_ascii_case(expected))
+                    .unwrap_or(false)
+        })
+    };
+    let header_present = |name: &str| {
+        parsed
+            .headers
+            .iter()
+            .any(|header| header.name.eq_ignore_ascii_case(name) && !header.value.is_empty())
+    };
+
+    path_matches
+        && header_present("host")
+        && header_has_token("connection", "upgrade")
+        && header_has_token("upgrade", "websocket")
+        && header_equals("sec-websocket-version", "13")
+        && header_present("sec-websocket-key")
 }
 
 #[cfg(test)]
@@ -384,13 +398,19 @@ mod tests {
 
     #[test]
     fn recognizes_trojan_go_websocket_handshake() {
-        let request = b"GET /trojan?ed=2048 HTTP/1.1\r\nHost: example.com\r\nUpgrade: WebSocket\r\nConnection: Upgrade\r\n\r\n";
+        let request = b"GET /trojan?ed=2048 HTTP/1.1\r\nHost: example.com\r\nUpgrade: WebSocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n";
         assert!(is_trojan_go_websocket_request(request, "/trojan"));
     }
 
     #[test]
     fn routes_other_http_paths_to_trojan_fallback() {
         let request = b"GET / HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\n\r\n";
+        assert!(!is_trojan_go_websocket_request(request, "/trojan"));
+    }
+
+    #[test]
+    fn rejects_incomplete_websocket_handshake() {
+        let request = b"GET /trojan HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\n\r\n";
         assert!(!is_trojan_go_websocket_request(request, "/trojan"));
     }
 

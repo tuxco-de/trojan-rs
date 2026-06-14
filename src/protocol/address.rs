@@ -1,3 +1,4 @@
+use bytes::{Buf, BufMut};
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor},
@@ -5,11 +6,10 @@ use std::{
     str::FromStr,
     vec,
 };
-use bytes::{Buf, BufMut};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::error::Error;
 use super::new_error;
+use crate::error::Error;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub enum Address {
@@ -27,9 +27,7 @@ pub struct AddressError {
 
 impl From<AddressError> for io::Error {
     fn from(e: AddressError) -> Self {
-        io::Error::other(
-            format!("address error: {}", e.message),
-        )
+        io::Error::other(format!("address error: {}", e.message))
     }
 }
 
@@ -179,9 +177,8 @@ impl Address {
                 let mut domain_name = vec![0u8; domain_len];
                 cur.copy_to_slice(&mut domain_name);
                 let port = cur.get_u16();
-                let domain_name = String::from_utf8(domain_name).map_err(|e| {
-                    new_error(format!("invalid utf8 domain name {}", e))
-                })?;
+                let domain_name = String::from_utf8(domain_name)
+                    .map_err(|e| new_error(format!("invalid utf8 domain name {}", e)))?;
                 Ok(Address::DomainNameAddress(domain_name, port))
             }
             Self::ADDR_TYPE_IPV6 => {

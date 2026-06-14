@@ -14,8 +14,9 @@ addr = "0.0.0.0:443"
 sni = "example.com"
 cert = "cert.pem"
 key = "key.pem"
+# handshake_timeout_secs = 10
 
-# optional: serve a static page for ordinary HTTPS requests and invalid passwords
+# optional: serve /, /index.html and /robots.txt for ordinary HTTPS requests
 [fallback]
 page = "config/camouflage.html"
 # request_timeout_secs = 10

@@ -1,25 +1,13 @@
-use serde::Deserialize;
 use crate::protocol::{
     fallback::FallbackConfig,
-    mux::{
-        acceptor::MuxAcceptorConfig,
-        connector::MuxConnectorConfig,
-    },
+    mux::{acceptor::MuxAcceptorConfig, connector::MuxConnectorConfig},
     socks5::acceptor::Socks5AcceptorConfig,
-    tls::{
-        acceptor::TrojanTlsAcceptorConfig,
-        connector::TrojanTlsConnectorConfig,
-    },
-    trojan::{
-        acceptor::TrojanAcceptorConfig,
-        connector::TrojanConnectorConfig,
-    },
+    tls::{acceptor::TrojanTlsAcceptorConfig, connector::TrojanTlsConnectorConfig},
+    trojan::{acceptor::TrojanAcceptorConfig, connector::TrojanConnectorConfig},
     vless::acceptor::VlessAcceptorConfig,
-    websocket::{
-        acceptor::WebSocketAcceptorConfig,
-        connector::WebSocketConnectorConfig,
-    },
+    websocket::{acceptor::WebSocketAcceptorConfig, connector::WebSocketConnectorConfig},
 };
+use serde::Deserialize;
 
 #[derive(Deserialize)]
 pub struct GlobalConfig {

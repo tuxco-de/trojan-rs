@@ -40,7 +40,7 @@
 
 - 隐蔽传输
 
-    `Trojan-rs` 使用 TLS 建立代理隧道，并支持协议回落。客户端与服务端统一使用 BoringSSL 的原生握手行为，不再提供过期的浏览器 ClientHello 模板。
+    `Trojan-rs` 使用 TLS 建立代理隧道，并支持协议回落。客户端与服务端统一使用 BoringSSL 的原生握手行为，不再提供过期的浏览器 ClientHello 模板。裸 Trojan 不声明 ALPN，WSS 使用 `http/1.1`；服务端会校验配置的 SNI、证书域名和 TLS 握手超时。内置 fallback 仅响应规范 HTTP 请求，并提供根页面、`/index.html` 和 `/robots.txt` 路由。
 
 - 跨平台支持
 

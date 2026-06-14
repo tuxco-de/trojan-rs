@@ -1,11 +1,52 @@
 use crate::error::Error;
-use std::io;
+use std::{io, net::IpAddr};
 
 pub mod acceptor;
 pub mod connector;
 
+const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
+
+pub(super) fn default_handshake_timeout_secs() -> u64 {
+    DEFAULT_HANDSHAKE_TIMEOUT_SECS
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TlsAlpn {
+    None,
+    Http11,
+}
+
+impl TlsAlpn {
+    pub(super) fn wire_protocols(self) -> Option<&'static [u8]> {
+        match self {
+            Self::None => None,
+            Self::Http11 => Some(b"\x08http/1.1"),
+        }
+    }
+}
+
 fn new_error<T: ToString>(message: T) -> io::Error {
     Error::new(format!("tls: {}", message.to_string())).into()
+}
+
+pub(super) fn validate_sni(sni: &str) -> io::Result<()> {
+    if sni.is_empty() || sni.len() > 253 || sni.ends_with('.') || sni.parse::<IpAddr>().is_ok() {
+        return Err(new_error("sni must be a valid DNS hostname"));
+    }
+
+    for label in sni.split('.') {
+        if label.is_empty()
+            || label.len() > 63
+            || label.starts_with('-')
+            || label.ends_with('-')
+            || !label
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(new_error("sni must be a valid DNS hostname"));
+        }
+    }
+    Ok(())
 }
 
 pub fn get_cipher_list(cipher: Option<&[String]>) -> io::Result<Option<String>> {
@@ -41,7 +82,7 @@ pub fn get_cipher_list(cipher: Option<&[String]>) -> io::Result<Option<String>> 
 
 #[cfg(test)]
 mod tests {
-    use super::get_cipher_list;
+    use super::{get_cipher_list, validate_sni, TlsAlpn};
 
     #[test]
     fn translates_tls12_cipher_names() {
@@ -59,5 +100,21 @@ mod tests {
     fn rejects_tls13_cipher_configuration() {
         let ciphers = vec!["TLS13_AES_128_GCM_SHA256".to_owned()];
         assert!(get_cipher_list(Some(&ciphers)).is_err());
+    }
+
+    #[test]
+    fn validates_sni_hostname() {
+        assert!(validate_sni("example.com").is_ok());
+        assert!(validate_sni("edge-1.example.com").is_ok());
+        assert!(validate_sni("").is_err());
+        assert!(validate_sni("127.0.0.1").is_err());
+        assert!(validate_sni("bad_name.example.com").is_err());
+        assert!(validate_sni("example.com.").is_err());
+    }
+
+    #[test]
+    fn exposes_alpn_only_for_http_transport() {
+        assert_eq!(TlsAlpn::None.wire_protocols(), None);
+        assert_eq!(TlsAlpn::Http11.wire_protocols(), Some(&b"\x08http/1.1"[..]));
     }
 }

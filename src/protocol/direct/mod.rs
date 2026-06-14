@@ -15,8 +15,6 @@ pub struct DirectTcpStream {
     inner: TcpStream,
 }
 
-
-
 impl AsyncRead for DirectTcpStream {
     fn poll_read(
         mut self: Pin<&mut Self>,

@@ -13,6 +13,7 @@ addr = "example.com:443"
 sni = "example.com"
 cert = "cert.pem" # optional
 # cipher = ["TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"] # optional, TLS 1.2 only
+# handshake_timeout_secs = 10
 
 # optional
 # [websocket]
