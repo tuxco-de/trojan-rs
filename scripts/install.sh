@@ -98,18 +98,18 @@ has_openrc() {
     command_exists rc-service && command_exists rc-update
 }
 
-svc_start() { has_systemd && svc_start || rc-service trojan-rs start; }
-svc_stop() { has_systemd && svc_stop 2>/dev/null || rc-service trojan-rs stop 2>/dev/null; }
-svc_restart() { has_systemd && svc_restart || rc-service trojan-rs restart; }
+svc_start() { has_systemd && systemctl start trojan-rs.service || rc-service trojan-rs start; }
+svc_stop() { has_systemd && systemctl stop trojan-rs.service 2>/dev/null || rc-service trojan-rs stop 2>/dev/null; }
+svc_restart() { has_systemd && systemctl restart trojan-rs.service || rc-service trojan-rs restart; }
 svc_try_restart() { has_systemd && systemctl try-restart trojan-rs.service 2>/dev/null || rc-service trojan-rs restart 2>/dev/null; }
 svc_enable() { has_systemd && systemctl enable trojan-rs.service >/dev/null || rc-update add trojan-rs default >/dev/null; }
 svc_disable() { has_systemd && systemctl disable trojan-rs.service 2>/dev/null || rc-update del trojan-rs default 2>/dev/null; }
-svc_status() { has_systemd && svc_status || rc-service trojan-rs status; }
-svc_is_active() { has_systemd && svc_is_active || rc-service trojan-rs status | grep -q "started"; }
+svc_status() { has_systemd && systemctl status trojan-rs.service || rc-service trojan-rs status; }
+svc_is_active() { has_systemd && systemctl is-active --quiet trojan-rs.service || rc-service trojan-rs status | grep -q "started"; }
 svc_daemon_reload() { has_systemd && systemctl daemon-reload || true; }
 svc_logs() {
     if has_systemd; then
-        svc_logs
+        journalctl -u trojan-rs.service -n 30 --no-pager
     else
         tail -n 30 /var/log/trojan-rs.log 2>/dev/null || true
     fi
