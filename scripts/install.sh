@@ -116,7 +116,7 @@ svc_logs() {
 }
 svc_logs_f() {
     if has_systemd; then
-        svc_logs_f
+        journalctl -u trojan-rs.service -f -n 30 --no-pager
     else
         tail -f /var/log/trojan-rs.log || true
     fi
