@@ -390,6 +390,26 @@ uninstall() {
     fi
 }
 
+update_bin_only() {
+    check_root
+    if [ ! -f "${BIN_FILE}" ]; then
+        echo -e "${RED}未检测到已安装的 trojan-rs，请先执行全新安装。${PLAIN}"
+        return
+    fi
+    echo -e "${GREEN}准备更新二进制文件...${PLAIN}"
+    CURRENT_VER=$("${BIN_FILE}" --version 2>/dev/null || echo "未知版本")
+    echo -e "${YELLOW}当前版本: ${CURRENT_VER}${PLAIN}"
+    
+    echo -e "${GREEN}正在停止服务...${PLAIN}"
+    systemctl stop trojan-rs 2>/dev/null || true
+    
+    download_bin
+    
+    echo -e "${GREEN}正在重启服务...${PLAIN}"
+    systemctl start trojan-rs 2>/dev/null || true
+    echo -e "${GREEN}二进制文件更新完毕！${PLAIN}"
+}
+
 share_node() {
     if [ ! -f "${CONFIG_FILE}" ]; then
         echo -e "${RED}未找到配置文件 ${CONFIG_FILE}，请先执行安装。${PLAIN}"
@@ -479,9 +499,10 @@ menu() {
         echo "4. 查看实时运行日志"
         echo "5. 彻底卸载"
         echo "6. 生成 Clash 节点配置 (JSON)"
+        echo "7. 仅更新核心二进制文件"
         echo "0. 退出脚本"
         echo -e "=================================="
-        read -rp "请输入选择 [0-6]: " CHOICE
+        read -rp "请输入选择 [0-7]: " CHOICE
         case "${CHOICE}" in
             1) install ;;
             2) change_config ;;
@@ -489,6 +510,7 @@ menu() {
             4) view_logs ;;
             5) uninstall ;;
             6) share_node ;;
+            7) update_bin_only ;;
             0) exit 0 ;;
             *) echo -e "${RED}输入无效，请重新输入。${PLAIN}" ;;
         esac
