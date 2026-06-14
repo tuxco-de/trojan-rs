@@ -1,4 +1,7 @@
-use super::{new_error, BinaryWsStream};
+use super::{
+    default_handshake_timeout_secs, default_max_handshake_size, new_error, BinaryWsStream,
+    WebSocketOptions,
+};
 use crate::protocol::fallback::{FallbackConfig, FallbackPage};
 use crate::protocol::{AcceptResult, DummyUdpStream, ProxyAcceptor, ProxyTcpStream};
 use async_trait::async_trait;
@@ -8,45 +11,20 @@ use serde::Deserialize;
 use std::{
     io,
     pin::Pin,
+    sync::Arc,
     task::{Context, Poll},
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
-use tokio::time::timeout;
+use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::{
     accept_hdr_async_with_config,
     tungstenite::{
         handshake::server::{Callback, ErrorResponse, Request, Response},
-        http::{StatusCode, Uri},
+        http::StatusCode,
         protocol::WebSocketConfig,
     },
 };
-
-const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
-const DEFAULT_MAX_HANDSHAKE_SIZE: usize = 8 * 1024;
-const DEFAULT_BUFFER_SIZE: usize = 16 * 1024;
-const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
-const DEFAULT_MAX_WRITE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
-
-fn default_handshake_timeout_secs() -> u64 {
-    DEFAULT_HANDSHAKE_TIMEOUT_SECS
-}
-
-fn default_max_handshake_size() -> usize {
-    DEFAULT_MAX_HANDSHAKE_SIZE
-}
-
-fn default_buffer_size() -> usize {
-    DEFAULT_BUFFER_SIZE
-}
-
-fn default_max_message_size() -> usize {
-    DEFAULT_MAX_MESSAGE_SIZE
-}
-
-fn default_max_write_buffer_size() -> usize {
-    DEFAULT_MAX_WRITE_BUFFER_SIZE
-}
 
 #[derive(Deserialize)]
 pub struct WebSocketAcceptorConfig {
@@ -55,28 +33,32 @@ pub struct WebSocketAcceptorConfig {
     handshake_timeout_secs: u64,
     #[serde(default = "default_max_handshake_size")]
     max_handshake_size: usize,
-    #[serde(default = "default_buffer_size")]
-    read_buffer_size: usize,
-    #[serde(default = "default_buffer_size")]
-    write_buffer_size: usize,
-    #[serde(default = "default_max_message_size")]
-    max_message_size: usize,
-    #[serde(default = "default_max_message_size")]
-    max_frame_size: usize,
-    #[serde(default = "default_max_write_buffer_size")]
-    max_write_buffer_size: usize,
+    #[serde(flatten)]
+    options: WebSocketOptions,
 }
 
-
 struct WebSocketCallback {
-    path: String,
+    path: Arc<str>,
 }
 
 impl Callback for WebSocketCallback {
     fn on_request(self, request: &Request, response: Response) -> Result<Response, ErrorResponse> {
-        if request.uri().path() != self.path {
+        let date_str = httpdate::fmt_http_date(std::time::SystemTime::now());
+        
+        if request.uri().path() != self.path.as_ref() {
             let mut resp = ErrorResponse::new(None);
             *resp.status_mut() = StatusCode::NOT_FOUND;
+            
+            if let Ok(val) = "nginx".parse() {
+                resp.headers_mut().insert("Server", val);
+            }
+            if let Ok(val) = date_str.parse() {
+                resp.headers_mut().insert("Date", val);
+            }
+            if let Ok(val) = "close".parse() {
+                resp.headers_mut().insert("Connection", val);
+            }
+
             error!(
                 "invalid websocket path: {}, expected: {}",
                 request.uri(),
@@ -84,6 +66,13 @@ impl Callback for WebSocketCallback {
             );
             Err(resp)
         } else {
+            let mut response = response;
+            if let Ok(val) = "nginx".parse() {
+                response.headers_mut().insert("Server", val);
+            }
+            if let Ok(val) = date_str.parse() {
+                response.headers_mut().insert("Date", val);
+            }
             Ok(response)
         }
     }
@@ -197,7 +186,7 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for PrefixedStream<T> {
 }
 
 pub struct WebSocketAcceptor<T: ProxyAcceptor> {
-    path: String,
+    path: Arc<str>,
     handshake_timeout: Duration,
     max_handshake_size: usize,
     websocket_config: WebSocketConfig,
@@ -214,14 +203,15 @@ impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         loop {
             let (mut stream, addr) = self.inner.accept().await?.unwrap_tcp_with_addr();
-            let request_head = timeout(
-                self.handshake_timeout,
+            let deadline = Instant::now() + self.handshake_timeout;
+            let request_head = timeout_at(
+                deadline,
                 read_request_head(&mut stream, self.max_handshake_size),
             )
             .await
             .map_err(|_| new_error("websocket handshake timed out"))??;
 
-            let is_websocket = is_trojan_go_websocket_request(&request_head, &self.path);
+            let is_websocket = is_trojan_go_websocket_request(&request_head, self.path.as_ref());
             if !is_websocket {
                 if !self.allow_raw {
                     if let Some(ref fallback) = self.fallback {
@@ -239,12 +229,12 @@ impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
             }
 
             let prefixed = PrefixedStream::new(request_head, stream);
-            let stream = timeout(
-                self.handshake_timeout,
+            let stream = timeout_at(
+                deadline,
                 accept_hdr_async_with_config(
                     prefixed,
                     WebSocketCallback {
-                        path: self.path.clone(),
+                        path: Arc::clone(&self.path),
                     },
                     Some(self.websocket_config),
                 ),
@@ -285,15 +275,10 @@ impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
     ) -> io::Result<Self> {
         validate_config(config)?;
         let fallback = FallbackPage::new(fallback_config)?;
-        let websocket_config = WebSocketConfig::default()
-            .read_buffer_size(config.read_buffer_size)
-            .write_buffer_size(config.write_buffer_size)
-            .max_write_buffer_size(config.max_write_buffer_size)
-            .max_message_size(Some(config.max_message_size))
-            .max_frame_size(Some(config.max_frame_size));
+        let websocket_config = config.options.tungstenite_config();
         Ok(Self {
             inner,
-            path: config.path.clone(),
+            path: Arc::from(config.path.as_str()),
             handshake_timeout: Duration::from_secs(config.handshake_timeout_secs),
             max_handshake_size: config.max_handshake_size,
             websocket_config,
@@ -312,17 +297,10 @@ fn validate_config(config: &WebSocketAcceptorConfig) -> io::Result<()> {
             "websocket path must not contain a query or fragment",
         ));
     }
-    if config.handshake_timeout_secs == 0
-        || config.max_handshake_size < 256
-        || config.read_buffer_size == 0
-        || config.max_message_size == 0
-        || config.max_frame_size == 0
-        || config.max_frame_size > config.max_message_size
-        || config.max_write_buffer_size <= config.write_buffer_size
-    {
-        return Err(new_error("invalid websocket resource limits"));
+    if config.handshake_timeout_secs == 0 || config.max_handshake_size < 256 {
+        return Err(new_error("invalid websocket handshake limits"));
     }
-    Ok(())
+    config.options.validate()
 }
 
 async fn read_request_head<T: AsyncRead + Unpin>(
@@ -376,13 +354,15 @@ fn is_trojan_go_websocket_request(request: &[u8], expected_path: &str) -> bool {
     }
     let path_matches = parsed
         .path
-        .and_then(|path| path.parse::<Uri>().ok())
-        .map(|uri| uri.path() == expected_path)
-        .unwrap_or(false);
+        .is_some_and(|path| path.split_once('?').map_or(path, |(path, _)| path) == expected_path);
     let has_upgrade = parsed.headers.iter().any(|header| {
         header.name.eq_ignore_ascii_case("upgrade")
             && std::str::from_utf8(header.value)
-                .map(|value| value.trim().eq_ignore_ascii_case("websocket"))
+                .map(|value| {
+                    value
+                        .split(',')
+                        .any(|token| token.trim().eq_ignore_ascii_case("websocket"))
+                })
                 .unwrap_or(false)
     });
     path_matches && has_upgrade
@@ -392,10 +372,10 @@ fn is_trojan_go_websocket_request(request: &[u8], expected_path: &str) -> bool {
 mod tests {
     use super::{
         is_trojan_go_websocket_request, read_request_head, BinaryWsStream, PrefixedStream,
-        WebSocketAcceptorConfig, WebSocketCallback, DEFAULT_HANDSHAKE_TIMEOUT_SECS,
-        DEFAULT_MAX_HANDSHAKE_SIZE, DEFAULT_MAX_MESSAGE_SIZE,
+        WebSocketAcceptorConfig, WebSocketCallback,
     };
     use futures_util::SinkExt;
+    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
     use tokio_tungstenite::{
         accept_hdr_async_with_config, client_async,
@@ -417,12 +397,9 @@ mod tests {
     #[test]
     fn legacy_path_only_config_uses_safe_defaults() {
         let config: WebSocketAcceptorConfig = toml::from_str("path = '/trojan'").unwrap();
-        assert_eq!(
-            config.handshake_timeout_secs,
-            DEFAULT_HANDSHAKE_TIMEOUT_SECS
-        );
-        assert_eq!(config.max_handshake_size, DEFAULT_MAX_HANDSHAKE_SIZE);
-        assert_eq!(config.max_message_size, DEFAULT_MAX_MESSAGE_SIZE);
+        assert_eq!(config.handshake_timeout_secs, 10);
+        assert_eq!(config.max_handshake_size, 8 * 1024);
+        assert_eq!(config.options.max_message_size, 1024 * 1024);
     }
 
     #[tokio::test]
@@ -436,7 +413,7 @@ mod tests {
             let websocket = accept_hdr_async_with_config(
                 prefixed,
                 WebSocketCallback {
-                    path: "/trojan".to_owned(),
+                    path: Arc::from("/trojan"),
                 },
                 Some(WebSocketConfig::default()),
             )

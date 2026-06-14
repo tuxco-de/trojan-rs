@@ -177,8 +177,9 @@ async fn write_page<T: AsyncWrite + Unpin>(
     head_only: bool,
     body: &[u8],
 ) -> io::Result<()> {
+    let date_str = httpdate::fmt_http_date(std::time::SystemTime::now());
     let response_head = format!(
-        "HTTP/1.1 {status}\r\nServer: nginx\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n",
+        "HTTP/1.1 {status}\r\nServer: nginx\r\nDate: {date_str}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\nX-Content-Type-Options: nosniff\r\n\r\n",
         body.len()
     );
     stream.write_all(response_head.as_bytes()).await?;
