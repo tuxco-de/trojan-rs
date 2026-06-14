@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.1.6"
+SCRIPT_VERSION="1.1.8"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -26,7 +26,11 @@ ERROR="[${RED}-${PLAIN}]"
 
 INSTALL_DIR="/usr/local/trojan-rs"
 CONFIG_FILE="${INSTALL_DIR}/config.toml"
-SERVICE_FILE="/etc/systemd/system/trojan-rs.service"
+if [ -d /run/systemd/system ] || command -v systemctl >/dev/null 2>&1; then
+    SERVICE_FILE="/etc/systemd/system/trojan-rs.service"
+else
+    SERVICE_FILE="/etc/init.d/trojan-rs"
+fi
 CERT_DIR="${INSTALL_DIR}/cert"
 BIN_FILE="${INSTALL_DIR}/trojan-rs"
 DOMAIN_FILE="${INSTALL_DIR}/domain"
@@ -86,6 +90,39 @@ json_escape() {
     toml_escape "$1"
 }
 
+has_systemd() {
+    [ -d /run/systemd/system ] || command_exists systemctl
+}
+
+has_openrc() {
+    command_exists rc-service && command_exists rc-update
+}
+
+svc_start() { has_systemd && svc_start || rc-service trojan-rs start; }
+svc_stop() { has_systemd && svc_stop 2>/dev/null || rc-service trojan-rs stop 2>/dev/null; }
+svc_restart() { has_systemd && svc_restart || rc-service trojan-rs restart; }
+svc_try_restart() { has_systemd && systemctl try-restart trojan-rs.service 2>/dev/null || rc-service trojan-rs restart 2>/dev/null; }
+svc_enable() { has_systemd && systemctl enable trojan-rs.service >/dev/null || rc-update add trojan-rs default >/dev/null; }
+svc_disable() { has_systemd && systemctl disable trojan-rs.service 2>/dev/null || rc-update del trojan-rs default 2>/dev/null; }
+svc_status() { has_systemd && svc_status || rc-service trojan-rs status; }
+svc_is_active() { has_systemd && svc_is_active || rc-service trojan-rs status | grep -q "started"; }
+svc_daemon_reload() { has_systemd && systemctl daemon-reload || true; }
+svc_logs() {
+    if has_systemd; then
+        svc_logs
+    else
+        tail -n 30 /var/log/trojan-rs.log 2>/dev/null || true
+    fi
+}
+svc_logs_f() {
+    if has_systemd; then
+        svc_logs_f
+    else
+        tail -f /var/log/trojan-rs.log || true
+    fi
+}
+
+
 generate_uuid() {
     local hex
     if [ -r /proc/sys/kernel/random/uuid ]; then
@@ -109,7 +146,7 @@ generate_password() {
 require_runtime() {
     local missing=()
     local command
-    for command in curl tar openssl systemctl journalctl mktemp install; do
+    for command in curl tar openssl mktemp install; do
         if ! command_exists "$command"; then
             missing+=("$command")
         fi
@@ -118,8 +155,8 @@ require_runtime() {
         echo -e "${ERROR} 缺少必要命令: ${missing[*]}${PLAIN}"
         return 1
     fi
-    if [ ! -d /run/systemd/system ]; then
-        echo -e "${ERROR} 当前系统未运行 systemd，无法安装 systemd 服务。${PLAIN}"
+    if ! has_systemd && ! has_openrc; then
+        echo -e "${ERROR} 当前系统未运行 systemd 或 OpenRC，无法安装服务。${PLAIN}"
         return 1
     fi
 }
@@ -164,7 +201,24 @@ check_update() {
             "https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh" \
             -o "${TMP_SCRIPT}"; then
             if grep -q '^#!/bin/bash' "${TMP_SCRIPT}" && bash -n "${TMP_SCRIPT}"; then
-                if cmp -s "${TMP_SCRIPT}" "${SCRIPT_PATH}"; then
+                local current_hash=""
+                local tmp_hash=""
+                if command_exists sha256sum; then
+                    current_hash=$(sha256sum "${SCRIPT_PATH}" | awk '{print $1}')
+                    tmp_hash=$(sha256sum "${TMP_SCRIPT}" | awk '{print $1}')
+                elif command_exists md5sum; then
+                    current_hash=$(md5sum "${SCRIPT_PATH}" | awk '{print $1}')
+                    tmp_hash=$(md5sum "${TMP_SCRIPT}" | awk '{print $1}')
+                fi
+
+                local is_same=false
+                if [ -n "${current_hash}" ] && [ "${current_hash}" == "${tmp_hash}" ]; then
+                    is_same=true
+                elif cmp -s "${TMP_SCRIPT}" "${SCRIPT_PATH}"; then
+                    is_same=true
+                fi
+
+                if ${is_same}; then
                     rm -f "${TMP_SCRIPT}"
                     echo -e "${SUCCESS} 当前脚本已经是最新版本。${PLAIN}"
                     return
@@ -211,8 +265,11 @@ install_deps() {
         dnf install -y curl tar openssl
     elif command_exists yum; then
         yum install -y curl tar openssl
+    elif command_exists apk; then
+        apk update || true
+        apk add curl tar openssl
     else
-        echo -e "${ERROR} 不支持的包管理器，请使用 Debian/Ubuntu 或 RHEL/CentOS/Fedora。${PLAIN}"
+        echo -e "${ERROR} 不支持的包管理器，请使用 Debian/Ubuntu, RHEL/CentOS/Fedora 或 Alpine。${PLAIN}"
         exit 1
     fi
 }
@@ -232,7 +289,7 @@ install_acme() {
 
 install_acme_certificate() {
     local domain=$1
-    local reload_command='systemctl try-restart trojan-rs.service >/dev/null 2>&1 || true'
+    local reload_command='svc_try_restart'
 
     mkdir -p "${CERT_DIR}"
     if "${ACME_SH}" --install-cert -d "${domain}" \
@@ -508,6 +565,11 @@ generate_config() {
     config_temp=$(mktemp "${INSTALL_DIR}/config.toml.XXXXXX")
     escaped_path=$(toml_escape "${WSPATH}")
 
+    local listen_addr="0.0.0.0"
+    if [ -f /proc/net/if_inet6 ]; then
+        listen_addr="[::]"
+    fi
+
     if [ "$PROTO_CHOICE" == "2" ]; then
         # vless
         UUID=$(generate_uuid)
@@ -517,7 +579,7 @@ mode = "server"
 log_level = "info"
 
 [tls]
-addr = "0.0.0.0:${PORT}"
+addr = "${listen_addr}:${PORT}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
@@ -546,7 +608,7 @@ mode = "server"
 log_level = "info"
 
 [tls]
-addr = "0.0.0.0:${PORT}"
+addr = "${listen_addr}:${PORT}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
@@ -567,12 +629,12 @@ EOF
 }
 
 show_recent_logs() {
-    journalctl -u trojan-rs.service -n 30 --no-pager 2>/dev/null || true
+    svc_logs
 }
 
 check_service_health() {
     sleep 1
-    if systemctl is-active --quiet trojan-rs.service; then
+    if svc_is_active; then
         return 0
     fi
     echo -e "${ERROR} trojan-rs 服务启动失败，最近日志如下：${PLAIN}"
@@ -581,7 +643,7 @@ check_service_health() {
 }
 
 restart_service() {
-    if ! systemctl restart trojan-rs.service; then
+    if ! svc_restart; then
         echo -e "${ERROR} systemd 无法重启 trojan-rs。${PLAIN}"
         show_recent_logs
         return 1
@@ -589,9 +651,10 @@ restart_service() {
     check_service_health
 }
 
-setup_systemd() {
-    echo -e "${INFO} 配置 systemd 守护进程...${PLAIN}"
-    cat > "${SERVICE_FILE}" <<EOF
+setup_service() {
+    echo -e "${INFO} 配置后台服务守护进程...${PLAIN}"
+    if has_systemd; then
+        cat > "${SERVICE_FILE}" <<EOF
 [Unit]
 Description=trojan-rs service
 Wants=network-online.target
@@ -610,9 +673,29 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 EOF
+    else
+        cat > "${SERVICE_FILE}" <<EOF
+#!/sbin/openrc-run
 
-    systemctl daemon-reload
-    systemctl enable trojan-rs.service >/dev/null
+name="trojan-rs"
+description="trojan-rs proxy service"
+command="${BIN_FILE}"
+command_args="-c ${CONFIG_FILE}"
+command_background=true
+pidfile="/run/\${name}.pid"
+output_log="/var/log/trojan-rs.log"
+error_log="/var/log/trojan-rs.log"
+
+depend() {
+    need net
+    after firewall
+}
+EOF
+        chmod +x "${SERVICE_FILE}"
+    fi
+
+    svc_daemon_reload
+    svc_enable
     restart_service
     echo -e "${SUCCESS} 服务已启动并设置为开机自启。${PLAIN}"
 }
@@ -667,7 +750,7 @@ install_trojan() {
         generate_config
     fi
 
-    setup_systemd
+    setup_service
     echo -e "${SUCCESS} 安装与部署已全部完成！${PLAIN}"
     echo -e "${WARN} 请使用菜单栏的日志查看功能确认服务是否正常运行。${PLAIN}"
 }
@@ -679,7 +762,7 @@ manage_service() {
         echo -e " ${CYAN}=== 服务管理 (Systemd) ===${PLAIN}\n"
         
         # 实时显示当前服务运行状态
-        if systemctl is-active --quiet trojan-rs 2>/dev/null; then
+        if svc_is_active 2>/dev/null; then
             echo -e "${INFO} 当前服务状态: ${GREEN}运行中 (Running)${PLAIN}"
         else
             echo -e "${INFO} 当前服务状态: ${RED}已停止 (Stopped/Inactive)${PLAIN}"
@@ -697,14 +780,14 @@ manage_service() {
         case "${ACTION}" in
             1)
                 echo -e "${INFO} 正在启动服务...${PLAIN}"
-                if systemctl start trojan-rs.service && check_service_health; then
+                if svc_start && check_service_health; then
                     echo -e "${SUCCESS} 服务已启动。${PLAIN}"
                 fi
                 sleep 1
                 ;;
             2)
                 echo -e "${INFO} 正在停止服务...${PLAIN}"
-                if systemctl stop trojan-rs.service; then
+                if svc_stop; then
                     echo -e "${SUCCESS} 服务已停止。${PLAIN}"
                 else
                     echo -e "${ERROR} 服务停止失败。${PLAIN}"
@@ -721,7 +804,7 @@ manage_service() {
             4)
                 echo -e "\n${INFO} 服务详细状态："
                 echo -e "${BLUE}────────────────────────────────────────────────────────────────────────${PLAIN}"
-                systemctl status trojan-rs || true
+                svc_status || true
                 echo -e "${BLUE}────────────────────────────────────────────────────────────────────────${PLAIN}"
                 echo -ne "${CYAN}按回车键继续...${PLAIN}"
                 read -r
@@ -742,7 +825,7 @@ view_logs() {
     print_banner
     echo -e " ${CYAN}=== 查看实时运行日志 ===${PLAIN}\n"
     echo -e "${INFO} 正在打开日志流，按 Ctrl+C 退出...${PLAIN}"
-    journalctl -u trojan-rs.service -f || true
+    svc_logs_f
 }
 
 change_config() {
@@ -816,10 +899,10 @@ uninstall() {
     echo -ne "${WARN} 警告：您确定要完全卸载 trojan-rs 吗？[y/N]: "
     read -r CONFIRM
     if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-        systemctl stop trojan-rs.service 2>/dev/null || true
-        systemctl disable trojan-rs.service 2>/dev/null || true
+        svc_stop
+        svc_disable
         rm -f "${SERVICE_FILE}"
-        systemctl daemon-reload
+        svc_daemon_reload
 
         # 提示用户清理 acme.sh 证书数据
         echo -ne "${WARN} 是否同时清理 acme.sh 中该域名的证书记录？[y/N]: "
@@ -861,10 +944,10 @@ update_bin_only() {
     
     backup_file=$(mktemp)
     cp -p "${BIN_FILE}" "${backup_file}"
-    if systemctl is-active --quiet trojan-rs.service; then
+    if svc_is_active; then
         was_active=true
         echo -e "${INFO} 正在停止服务...${PLAIN}"
-        if ! systemctl stop trojan-rs.service; then
+        if ! svc_stop; then
             rm -f "${backup_file}"
             echo -e "${ERROR} 服务停止失败，取消更新。${PLAIN}"
             return 1
@@ -874,7 +957,7 @@ update_bin_only() {
     if ! download_bin; then
         install -m 0755 "${backup_file}" "${BIN_FILE}"
         rm -f "${backup_file}"
-        ${was_active} && systemctl start trojan-rs.service || true
+        ${was_active} && svc_start || true
         echo -e "${ERROR} 更新失败，已保留旧版本。${PLAIN}"
         return 1
     fi
