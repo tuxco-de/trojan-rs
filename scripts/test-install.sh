@@ -78,7 +78,7 @@ generate_config >/dev/null <<'EOF'
 /ws
 
 EOF
-grep -q 'addr = "0.0.0.0:443"' "${CONFIG_FILE}"
+grep -Eq 'addr = "(0\.0\.0\.0:443|\[::\]:443)"' "${CONFIG_FILE}"
 grep -Eq 'password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
 grep -q 'path = "/ws"' "${CONFIG_FILE}"
 
@@ -94,7 +94,7 @@ generate_config >/dev/null <<'EOF'
 8443
 /vless
 EOF
-grep -q 'addr = "0.0.0.0:8443"' "${CONFIG_FILE}"
+grep -Eq 'addr = "(0\.0\.0\.0:8443|\[::\]:8443)"' "${CONFIG_FILE}"
 grep -Eq 'users = \["[0-9a-f-]{36}"\]' "${CONFIG_FILE}"
 grep -q 'path = "/vless"' "${CONFIG_FILE}"
 
@@ -110,20 +110,31 @@ EOF
 chmod +x "${TEST_ROOT}/package/trojan-rs-server"
 tar -czf "${TEST_ROOT}/release.tar.gz" -C "${TEST_ROOT}/package" trojan-rs-server
 FIXTURE_ARCHIVE="${TEST_ROOT}/release.tar.gz"
+CURL_LOG="${TEST_ROOT}/curl.log"
+CURL_FAIL_PATTERN=""
 
 curl() {
     local output=""
+    local url=""
     while (($#)); do
         case "$1" in
             --output|-o)
                 output=$2
                 shift 2
                 ;;
+            http://*|https://*)
+                url=$1
+                shift
+                ;;
             *)
                 shift
                 ;;
         esac
     done
+    printf '%s\n' "${url}" >>"${CURL_LOG}"
+    if [ -n "${CURL_FAIL_PATTERN}" ] && [[ "${url}" == *"${CURL_FAIL_PATTERN}"* ]]; then
+        return 22
+    fi
     cp "${FIXTURE_ARCHIVE}" "${output}"
 }
 
@@ -134,5 +145,15 @@ uname() {
 download_bin >/dev/null
 test -x "${BIN_FILE}"
 [[ "$("${BIN_FILE}" --version)" == 'trojan-rs-test 1.0.0' ]]
+grep -q 'trojan-rs-server-linux-amd64.tar.gz' "${CURL_LOG}"
+
+rm -f "${BIN_FILE}"
+: >"${CURL_LOG}"
+CURL_FAIL_PATTERN="trojan-rs-server-linux-amd64.tar.gz"
+download_bin >/dev/null
+test -x "${BIN_FILE}"
+[[ "$("${BIN_FILE}" --version)" == 'trojan-rs-test 1.0.0' ]]
+grep -q 'trojan-rs-server-linux-amd64.tar.gz' "${CURL_LOG}"
+grep -q 'trojan-rs-server-linux-musl-amd64.tar.gz' "${CURL_LOG}"
 
 echo "install script tests passed"

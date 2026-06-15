@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.5"
+SCRIPT_VERSION="1.2.8"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -467,78 +467,125 @@ deploy_camouflage() {
     echo -e "${SUCCESS} 伪装页面已部署至 ${INSTALL_DIR}/camouflage.html${PLAIN}"
 }
 
-download_bin() {
-    echo -e "${INFO} 正在获取最新的 trojan-rs 版本...${PLAIN}"
-    local arch
-    local asset_name
-    local download_url
-    local temp_dir
-    local archive
-    local extracted_bin
-    local is_musl=""
-    arch=$(uname -m)
-    is_musl=""
-    if [ -f /etc/alpine-release ] || (command_exists ldd && ldd /bin/sh 2>&1 | grep -q 'musl'); then
-        is_musl="-musl"
+diagnose_binary_failure() {
+    local binary=$1
+    local error_output=$2
+    echo -e "${WARN} 二进制运行错误:${PLAIN}"
+    if [ -n "${error_output}" ]; then
+        printf '%s\n' "${error_output}" | sed 's/^/    /'
     fi
-    case "$arch" in
-        x86_64|amd64) asset_name="trojan-rs-server-linux${is_musl}-amd64.tar.gz" ;;
-        aarch64|arm64) asset_name="trojan-rs-server-linux${is_musl}-arm64.tar.gz" ;;
-        *) echo -e "${ERROR} 不支持的架构: $arch${PLAIN}"; return 1 ;;
-    esac
+    if command_exists file; then
+        file "${binary}" 2>&1 | sed 's/^/    /' || true
+    fi
+    if command_exists ldd; then
+        ldd "${binary}" 2>&1 | sed 's/^/    /' || true
+    fi
+}
 
-    download_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${asset_name}"
-    temp_dir=$(mktemp -d)
-    archive="${temp_dir}/${asset_name}"
+try_install_binary_archive() {
+    local asset_name=$1
+    local download_url=$2
+    local temp_dir=$3
+    local archive="${temp_dir}/${asset_name}"
+    local extract_dir="${temp_dir}/extract"
+    local extracted_bin
+    local version_output
+
+    rm -f "${BIN_FILE}.new"
+    rm -f "${archive}"
+    rm -rf -- "${extract_dir}"
+    mkdir -p "${extract_dir}" "${INSTALL_DIR}"
+
     echo -e "${INFO} 正在下载 ${asset_name}...${PLAIN}"
     if ! curl --fail --location --retry 3 --output "${archive}" "${download_url}"; then
-        rm -f "${archive}"
-        echo -e "${WARN} 自动下载失败，当前 Release 可能没有 ${arch} 架构产物。${PLAIN}"
-        echo -ne "${INFO} 尝试让您手动输入下载地址 (二进制压缩包直链): "
-        read -r download_url
-        if [ -z "${download_url}" ] || \
-           ! curl --fail --location --retry 3 --output "${archive}" "${download_url}"; then
-            echo -e "${ERROR} 下载失败！请检查网络连接或下载链接。${PLAIN}"
-            rm -rf -- "${temp_dir}"
-            return 1
-        fi
+        echo -e "${WARN} 无法下载 ${asset_name}。${PLAIN}"
+        return 1
     fi
-
-    if ! tar -xzf "${archive}" -C "${temp_dir}"; then
-        echo -e "${ERROR} 解压失败！下载的文件可能已损坏。${PLAIN}"
-        rm -rf -- "${temp_dir}"
+    if ! tar -xzf "${archive}" -C "${extract_dir}"; then
+        echo -e "${WARN} ${asset_name} 解压失败。${PLAIN}"
         return 1
     fi
 
-    mkdir -p "${INSTALL_DIR}"
-
-    if [ -f "${temp_dir}/trojan-rs-server" ]; then
-        extracted_bin="${temp_dir}/trojan-rs-server"
-    elif [ -f "${temp_dir}/trojan-rs" ]; then
-        extracted_bin="${temp_dir}/trojan-rs"
-    elif [ -f "${temp_dir}/trojan-r" ]; then
-        extracted_bin="${temp_dir}/trojan-r"
+    if [ -f "${extract_dir}/trojan-rs-server" ]; then
+        extracted_bin="${extract_dir}/trojan-rs-server"
+    elif [ -f "${extract_dir}/trojan-rs" ]; then
+        extracted_bin="${extract_dir}/trojan-rs"
+    elif [ -f "${extract_dir}/trojan-r" ]; then
+        extracted_bin="${extract_dir}/trojan-r"
     else
-        echo -e "${ERROR} 解压后未找到可执行文件！${PLAIN}"
-        rm -rf -- "${temp_dir}"
+        echo -e "${WARN} ${asset_name} 中未找到可执行文件。${PLAIN}"
         return 1
     fi
 
     install -m 0755 "${extracted_bin}" "${BIN_FILE}.new"
-    
     if command_exists apk; then
         apk add --no-cache gcompat libstdc++ >/dev/null 2>&1 || true
     fi
 
-    if ! "${BIN_FILE}.new" --version >/dev/null 2>&1; then
-        rm -f "${BIN_FILE}.new"
-        rm -rf -- "${temp_dir}"
-        echo -e "${ERROR} 下载的二进制文件无法运行，已拒绝安装。${PLAIN}"
-        return 1
+    if version_output=$("${BIN_FILE}.new" --version 2>&1); then
+        mv -f "${BIN_FILE}.new" "${BIN_FILE}"
+        echo -e "${SUCCESS} 已验证 ${asset_name}: ${version_output}${PLAIN}"
+        return 0
     fi
-    mv -f "${BIN_FILE}.new" "${BIN_FILE}"
+
+    diagnose_binary_failure "${BIN_FILE}.new" "${version_output}"
+    rm -f "${BIN_FILE}.new"
+    return 1
+}
+
+download_bin() {
+    echo -e "${INFO} 正在获取最新的 trojan-rs 版本...${PLAIN}"
+    local arch
+    local asset_arch
+    local asset_name
+    local download_url
+    local temp_dir
+    local manual_url
+    local -a asset_candidates
+
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) asset_arch="amd64" ;;
+        aarch64|arm64) asset_arch="arm64" ;;
+        *) echo -e "${ERROR} 不支持的架构: $arch${PLAIN}"; return 1 ;;
+    esac
+
+    if [ -f /etc/alpine-release ] || (command_exists ldd && ldd /bin/sh 2>&1 | grep -q 'musl'); then
+        asset_candidates=(
+            "trojan-rs-server-linux-musl-${asset_arch}.tar.gz"
+            "trojan-rs-server-linux-${asset_arch}.tar.gz"
+        )
+    else
+        asset_candidates=(
+            "trojan-rs-server-linux-${asset_arch}.tar.gz"
+            "trojan-rs-server-linux-musl-${asset_arch}.tar.gz"
+        )
+    fi
+
+    temp_dir=$(mktemp -d)
+    for asset_name in "${asset_candidates[@]}"; do
+        download_url="https://github.com/${GITHUB_REPO}/releases/latest/download/${asset_name}"
+        if try_install_binary_archive "${asset_name}" "${download_url}" "${temp_dir}"; then
+            rm -rf -- "${temp_dir}"
+            echo -e "${SUCCESS} 二进制文件已安装至 ${BIN_FILE}${PLAIN}"
+            return 0
+        fi
+        echo -e "${WARN} ${asset_name} 不可用，尝试下一种 Linux 运行时产物。${PLAIN}"
+    done
+
+    echo -ne "${INFO} 自动下载均失败，可输入二进制压缩包直链 (直接回车取消): "
+    read -r manual_url
+    if [ -n "${manual_url}" ] && \
+       try_install_binary_archive "trojan-rs-server-manual.tar.gz" "${manual_url}" "${temp_dir}"; then
+        rm -rf -- "${temp_dir}"
+        echo -e "${SUCCESS} 二进制文件已安装至 ${BIN_FILE}${PLAIN}"
+        return 0
+    fi
+
+    rm -f "${BIN_FILE}.new"
     rm -rf -- "${temp_dir}"
-    echo -e "${SUCCESS} 二进制文件已安装至 ${BIN_FILE}${PLAIN}"
+    echo -e "${ERROR} 没有找到可在当前系统运行的发布产物，已拒绝安装。${PLAIN}"
+    return 1
 }
 
 generate_config() {
@@ -712,7 +759,7 @@ EOF
 
 install_trojan() {
     check_root
-    
+
     safe_clear
     print_banner
     echo -e " ${CYAN}=== 交互式全新安装 (手动 DNS 证书) ===${PLAIN}\n"
@@ -770,7 +817,7 @@ manage_service() {
         safe_clear
         print_banner
         echo -e " ${CYAN}=== 服务管理 (Systemd) ===${PLAIN}\n"
-        
+
         # 实时显示当前服务运行状态
         if svc_is_active 2>/dev/null; then
             echo -e "${INFO} 当前服务状态: ${GREEN}运行中 (Running)${PLAIN}"
@@ -778,7 +825,7 @@ manage_service() {
             echo -e "${INFO} 当前服务状态: ${RED}已停止 (Stopped/Inactive)${PLAIN}"
         fi
         echo ""
-        
+
         echo -e " ${CYAN}1.${PLAIN} 启动服务 (Start)"
         echo -e " ${CYAN}2.${PLAIN} 停止服务 (Stop)"
         echo -e " ${CYAN}3.${PLAIN} 重启服务 (Restart)"
@@ -885,7 +932,7 @@ change_config() {
         0) rm -f "${backup_file}"; return ;;
         *) echo -e "${ERROR} 无效选项，取消操作。${PLAIN}"; rm -f "${backup_file}"; press_any_key; return ;;
     esac
-    
+
     echo -ne "\n${WARN} 修改完毕，是否立即重启服务生效？[y/N]: "
     read -r RESTART_CONFIRM
     if [[ "$RESTART_CONFIRM" =~ ^[Yy]$ ]]; then
@@ -951,7 +998,7 @@ update_bin_only() {
     echo -e "${INFO} 准备更新二进制文件...${PLAIN}"
     CURRENT_VER=$("${BIN_FILE}" --version 2>/dev/null || echo "未知版本")
     echo -e "${INFO} 当前版本: ${MAGENTA}${CURRENT_VER}${PLAIN}"
-    
+
     backup_file=$(mktemp)
     cp -p "${BIN_FILE}" "${backup_file}"
     if svc_is_active; then

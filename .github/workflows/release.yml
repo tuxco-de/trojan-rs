@@ -13,29 +13,41 @@ permissions:
   contents: write
 
 jobs:
+  validate-release:
+    name: Validate release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Match Cargo version to tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n 1)
+          test -n "${package_version}"
+          test "v${package_version}" = "${GITHUB_REF_NAME}"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: validate-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: trojan-rs
             asset_suffix: darwin-amd64
-            cross_compile: false
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: trojan-rs
             asset_suffix: darwin-arm64
-            cross_compile: false
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: trojan-rs.exe
             asset_suffix: windows-amd64
-            cross_compile: false
 
     steps:
       - name: Checkout repository
@@ -45,12 +57,6 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Install BoringSSL build dependencies
-        if: startsWith(matrix.os, 'ubuntu-')
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake clang libclang-dev ninja-build
 
       - name: Install BoringSSL build dependencies (macOS)
         if: matrix.os == 'macos-latest'
@@ -66,17 +72,7 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build client binary
-        if: matrix.cross_compile == false
-        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features client
-
-      - name: Build client binary (cross)
-        if: matrix.cross_compile == true
-        uses: houseabsolute/actions-rust-cross@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          args: "--release --no-default-features --features client"
-          use-rust-cache: false
+        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features client
 
       - name: Rename client binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -84,24 +80,11 @@ jobs:
 
       - name: Rename client binary (Windows)
         if: matrix.os == 'windows-latest'
-        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-client.exe
-
-      - name: Compress client binary (cross)
-        if: matrix.cross_compile == true
-        run: tar -C target/${{ matrix.target }}/release -czvf trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+        shell: pwsh
+        run: Move-Item -LiteralPath "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination "target/${{ matrix.target }}/release/trojan-rs-client.exe"
 
       - name: Build server binary
-        if: matrix.cross_compile == false
-        run: cargo build --release --target ${{ matrix.target }} --no-default-features --features server
-
-      - name: Build server binary (cross)
-        if: matrix.cross_compile == true
-        uses: houseabsolute/actions-rust-cross@v1
-        with:
-          command: build
-          target: ${{ matrix.target }}
-          args: "--release --no-default-features --features server"
-          use-rust-cache: false
+        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features server
 
       - name: Rename server binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -109,39 +92,43 @@ jobs:
 
       - name: Rename server binary (Windows)
         if: matrix.os == 'windows-latest'
-        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-server.exe
+        shell: pwsh
+        run: Move-Item -LiteralPath "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination "target/${{ matrix.target }}/release/trojan-rs-server.exe"
 
-      - name: Compress binaries (Unix)
-        if: matrix.os != 'windows-latest' && matrix.cross_compile == false
+      - name: Verify and compress binaries (Unix)
+        if: matrix.os != 'windows-latest'
         run: |
+          set -euo pipefail
           cd target/${{ matrix.target }}/release
-          tar -czvf ../../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
-          tar -czvf ../../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
-          cd ../../..
+          ./trojan-rs-client --version
+          ./trojan-rs-server --version
+          tar -czf ../../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+          tar -czf ../../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
 
-      - name: Compress server binary (cross)
-        if: matrix.cross_compile == true
-        run: tar -C target/${{ matrix.target }}/release -czvf trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
-
-      - name: Compress binaries (Windows)
+      - name: Verify and compress binaries (Windows)
         if: matrix.os == 'windows-latest'
+        shell: pwsh
         run: |
-          cd target/${{ matrix.target }}/release
+          $ErrorActionPreference = 'Stop'
+          Set-Location "target/${{ matrix.target }}/release"
+          ./trojan-rs-client.exe --version
+          ./trojan-rs-server.exe --version
           Compress-Archive -Path trojan-rs-client.exe -DestinationPath ../../../trojan-rs-client-${{ matrix.asset_suffix }}.zip
           Compress-Archive -Path trojan-rs-server.exe -DestinationPath ../../../trojan-rs-server-${{ matrix.asset_suffix }}.zip
-          cd ../../..
 
-      - name: Upload binaries to release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@v4
         with:
-          generate_release_notes: true
-          files: |
-            *.tar.gz
-            *.zip
+          name: release-${{ matrix.asset_suffix }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            trojan-rs-client-${{ matrix.asset_suffix }}.*
+            trojan-rs-server-${{ matrix.asset_suffix }}.*
 
   build-musl:
     name: Build Musl ${{ matrix.asset_suffix }}
+    needs: validate-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -151,37 +138,59 @@ jobs:
             asset_suffix: linux-musl-amd64
           - os: ubuntu-24.04-arm
             asset_suffix: linux-musl-arm64
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build binaries in Alpine container
+      - name: Build statically linked musl binaries
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c " \
-            apk add --no-cache git rust cargo gcc g++ cmake make perl bash linux-headers clang clang-dev && \
-            cargo build --release --no-default-features --features client && \
-            mv target/release/trojan-rs target/release/trojan-rs-client && \
-            cargo build --release --no-default-features --features server && \
-            mv target/release/trojan-rs target/release/trojan-rs-server \
-          "
+          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace rust:alpine sh -euxc '
+            apk add --no-cache binutils build-base clang clang-dev cmake git linux-headers ninja perl
+            export RUSTFLAGS="-C target-feature=+crt-static"
+            cargo build --release --locked --no-default-features --features client
+            mv target/release/trojan-rs target/release/trojan-rs-client
+            cargo build --release --locked --no-default-features --features server
+            mv target/release/trojan-rs target/release/trojan-rs-server
+            if readelf -l target/release/trojan-rs-client | grep -q "Requesting program interpreter"; then
+              echo "client musl binary is dynamically linked" >&2
+              exit 1
+            fi
+            if readelf -l target/release/trojan-rs-server | grep -q "Requesting program interpreter"; then
+              echo "server musl binary is dynamically linked" >&2
+              exit 1
+            fi
+          '
 
       - name: Compress binaries
         run: |
-          cd target/release
-          tar -czvf ../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
-          tar -czvf ../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
-          cd ../..
+          set -euo pipefail
+          tar -C target/release -czf trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+          tar -C target/release -czf trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
 
-      - name: Upload binaries to release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Verify packaged musl binaries on Debian 11
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
+            mkdir -p /tmp/client /tmp/server
+            tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
+            tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
+            /tmp/client/trojan-rs-client --version
+            /tmp/server/trojan-rs-server --version
+          '
+
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@v4
         with:
-          generate_release_notes: true
-          files: |
-            *.tar.gz
+          name: release-${{ matrix.asset_suffix }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+            trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
 
   build-gnu-legacy:
     name: Build GNU ${{ matrix.asset_suffix }}
+    needs: validate-release
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -191,33 +200,93 @@ jobs:
             asset_suffix: linux-amd64
           - os: ubuntu-24.04-arm
             asset_suffix: linux-arm64
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build binaries in Debian 11 container
+      - name: Build binaries against Debian 11 glibc
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace debian:11 sh -c " \
-            apt-get update && apt-get install -y curl git build-essential cmake clang libclang-dev ninja-build pkg-config && \
-            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal && \
-            export PATH=\$HOME/.cargo/bin:\$PATH && \
-            cargo build --release --no-default-features --features client && \
-            mv target/release/trojan-rs target/release/trojan-rs-client && \
-            cargo build --release --no-default-features --features server && \
-            mv target/release/trojan-rs target/release/trojan-rs-server \
-          "
+          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace rust:bullseye sh -euxc '
+            apt-get update
+            apt-get install -y --no-install-recommends build-essential clang curl git libclang-dev ninja-build perl pkg-config python3-pip
+            python3 -m pip install --no-cache-dir cmake==3.31.6
+            cmake --version
+            cargo build --release --locked --no-default-features --features client
+            mv target/release/trojan-rs target/release/trojan-rs-client
+            cargo build --release --locked --no-default-features --features server
+            mv target/release/trojan-rs target/release/trojan-rs-server
+          '
 
       - name: Compress binaries
         run: |
-          cd target/release
-          tar -czvf ../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
-          tar -czvf ../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
-          cd ../..
+          set -euo pipefail
+          tar -C target/release -czf trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+          tar -C target/release -czf trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
 
-      - name: Upload binaries to release
+      - name: Verify packaged GNU binaries on Debian 11
+        run: |
+          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
+            mkdir -p /tmp/client /tmp/server
+            tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
+            tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
+            /tmp/client/trojan-rs-client --version
+            /tmp/server/trojan-rs-server --version
+          '
+
+      - name: Upload packaged binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.asset_suffix }}
+          if-no-files-found: error
+          retention-days: 1
+          path: |
+            trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+            trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
+
+  publish:
+    name: Publish complete release
+    needs:
+      - build
+      - build-musl
+      - build-gnu-legacy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download packaged binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify complete asset set
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected=(
+            trojan-rs-client-darwin-amd64.tar.gz
+            trojan-rs-server-darwin-amd64.tar.gz
+            trojan-rs-client-darwin-arm64.tar.gz
+            trojan-rs-server-darwin-arm64.tar.gz
+            trojan-rs-client-windows-amd64.zip
+            trojan-rs-server-windows-amd64.zip
+            trojan-rs-client-linux-amd64.tar.gz
+            trojan-rs-server-linux-amd64.tar.gz
+            trojan-rs-client-linux-arm64.tar.gz
+            trojan-rs-server-linux-arm64.tar.gz
+            trojan-rs-client-linux-musl-amd64.tar.gz
+            trojan-rs-server-linux-musl-amd64.tar.gz
+            trojan-rs-client-linux-musl-arm64.tar.gz
+            trojan-rs-server-linux-musl-arm64.tar.gz
+          )
+          for asset in "${expected[@]}"; do
+            test -s "dist/${asset}"
+          done
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq "${#expected[@]}"
+
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
         with:
           generate_release_notes: true
-          files: |
-            *.tar.gz
+          fail_on_unmatched_files: true
+          files: dist/*
