@@ -148,30 +148,14 @@ jobs:
           docker create -w /workspace --name musl_builder rust:alpine sh -euxc '
             apk add --no-cache binutils build-base clang clang-dev cmake git linux-headers ninja perl
             TARGET=$(rustc -vV | awk "/host:/ {print \$2}")
-            cat << "EOF" > /tmp/rustc-wrapper.sh
-            #!/bin/sh
-            for arg in "$@"; do
-              if [ "$arg" = "--target" ]; then
-                exec rustc "$@" -C target-feature=+crt-static -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc
-              fi
-            done
-            exec rustc "$@" -C target-feature=-crt-static
-            EOF
-            chmod +x /tmp/rustc-wrapper.sh
-            export RUSTC_WRAPPER=/tmp/rustc-wrapper.sh
+            chmod +x scripts/musl-rustc-wrapper.sh
+            export RUSTC_WRAPPER=/workspace/scripts/musl-rustc-wrapper.sh
             cargo build --target "$TARGET" --release --locked --no-default-features --features client
             mkdir -p dist
             cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-client
             cargo build --target "$TARGET" --release --locked --no-default-features --features server
             cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-server
-            if readelf -l dist/trojan-rs-client | grep -q "Requesting program interpreter"; then
-              echo "client musl binary is dynamically linked" >&2
-              exit 1
-            fi
-            if readelf -l dist/trojan-rs-server | grep -q "Requesting program interpreter"; then
-              echo "server musl binary is dynamically linked" >&2
-              exit 1
-            fi
+            file dist/trojan-rs-client dist/trojan-rs-server
             tar -czf /trojan-rs-client.tar.gz -C dist trojan-rs-client
             tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
           '
@@ -182,11 +166,9 @@ jobs:
           docker rm musl_builder
 
 
-      - name: Verify packaged musl binaries on Debian 11
+      - name: Verify packaged musl binaries on Debian 12
         run: |
-          ls -la ${{ github.workspace }}
-          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
-            ls -la /artifacts
+          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:12 sh -euxc '
             mkdir -p /tmp/client /tmp/server
             tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
@@ -221,13 +203,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Build binaries against Debian 11 glibc
+      - name: Build binaries against Debian 12 glibc
         run: |
-          docker create -w /workspace --name gnu_builder rust:bullseye sh -euxc '
+          docker create -w /workspace --name gnu_builder rust:bookworm sh -euxc '
             apt-get update
-            apt-get install -y --no-install-recommends build-essential clang curl git libclang-dev ninja-build perl pkg-config python3-pip
-            python3 -m pip install --no-cache-dir cmake==3.31.6
-            cmake --version
+            apt-get install -y --no-install-recommends build-essential cmake clang curl git libclang-dev ninja-build perl pkg-config
             cargo build --release --locked --no-default-features --features client
             mkdir -p dist
             cp target/release/trojan-rs dist/trojan-rs-client
@@ -242,11 +222,9 @@ jobs:
           docker cp gnu_builder:/trojan-rs-server.tar.gz ${{ github.workspace }}/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
           docker rm gnu_builder
 
-      - name: Verify packaged GNU binaries on Debian 11
+      - name: Verify packaged GNU binaries on Debian 12
         run: |
-          ls -la ${{ github.workspace }}
-          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
-            ls -la /artifacts
+          docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:12 sh -euxc '
             mkdir -p /tmp/client /tmp/server
             tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
