@@ -432,7 +432,7 @@ fallback 从单一静态 `200` 演进为有限路由，但它仍不是 nginx：
 
 “BoringSSL 静态链接”不等于“整个程序在所有 Linux 上完全静态”。GNU 目标仍受 glibc 最低版本影响。历史上通过降低 x86_64 GNU runner 版本改善兼容性，但长期更稳定的发行方式是同时提供 musl 产物。
 
-安装脚本最终统一优先选择 `linux-musl-*` 资产，避免在 Alpine 上依赖 `gcompat` 模拟 glibc。发布验证至少应覆盖：
+安装脚本会自动检测系统并优先为 Alpine 选择 `linux-musl-*` 资产，为 Debian/Ubuntu 等其他发行版选择 `linux-*` GNU 资产，避免兼容性问题。发布验证至少应覆盖：
 
 - 二进制架构与 `uname -m` 匹配；
 - `--version` 可在目标系统执行；

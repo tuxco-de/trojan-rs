@@ -98,14 +98,14 @@ has_openrc() {
     command_exists rc-service && command_exists rc-update
 }
 
-svc_start() { has_systemd && systemctl start trojan-rs.service || rc-service trojan-rs start; }
-svc_stop() { has_systemd && systemctl stop trojan-rs.service 2>/dev/null || rc-service trojan-rs stop 2>/dev/null; }
-svc_restart() { has_systemd && systemctl restart trojan-rs.service || rc-service trojan-rs restart; }
-svc_try_restart() { has_systemd && systemctl try-restart trojan-rs.service 2>/dev/null || rc-service trojan-rs restart 2>/dev/null; }
-svc_enable() { has_systemd && systemctl enable trojan-rs.service >/dev/null || rc-update add trojan-rs default >/dev/null; }
-svc_disable() { has_systemd && systemctl disable trojan-rs.service 2>/dev/null || rc-update del trojan-rs default 2>/dev/null; }
-svc_status() { has_systemd && systemctl status trojan-rs.service || rc-service trojan-rs status; }
-svc_is_active() { has_systemd && systemctl is-active --quiet trojan-rs.service || rc-service trojan-rs status | grep -q "started"; }
+svc_start() { if has_systemd; then systemctl start trojan-rs.service; else rc-service trojan-rs start; fi; }
+svc_stop() { if has_systemd; then systemctl stop trojan-rs.service 2>/dev/null; else rc-service trojan-rs stop 2>/dev/null; fi; }
+svc_restart() { if has_systemd; then systemctl restart trojan-rs.service; else rc-service trojan-rs restart; fi; }
+svc_try_restart() { if has_systemd; then systemctl try-restart trojan-rs.service 2>/dev/null; else rc-service trojan-rs restart 2>/dev/null; fi; }
+svc_enable() { if has_systemd; then systemctl enable trojan-rs.service >/dev/null; else rc-update add trojan-rs default >/dev/null; fi; }
+svc_disable() { if has_systemd; then systemctl disable trojan-rs.service 2>/dev/null; else rc-update del trojan-rs default 2>/dev/null; fi; }
+svc_status() { if has_systemd; then systemctl status trojan-rs.service; else rc-service trojan-rs status; fi; }
+svc_is_active() { if has_systemd; then systemctl is-active --quiet trojan-rs.service; else rc-service trojan-rs status | grep -q "started"; fi; }
 svc_daemon_reload() { has_systemd && systemctl daemon-reload || true; }
 svc_logs() {
     if has_systemd; then
@@ -477,7 +477,10 @@ download_bin() {
     local extracted_bin
     local is_musl=""
     arch=$(uname -m)
-    is_musl="-musl"
+    is_musl=""
+    if [ -f /etc/alpine-release ] || (command_exists ldd && ldd /bin/sh 2>&1 | grep -q 'musl'); then
+        is_musl="-musl"
+    fi
     case "$arch" in
         x86_64|amd64) asset_name="trojan-rs-server-linux${is_musl}-amd64.tar.gz" ;;
         aarch64|arm64) asset_name="trojan-rs-server-linux${is_musl}-arm64.tar.gz" ;;
