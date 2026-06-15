@@ -145,32 +145,48 @@ jobs:
 
       - name: Build statically linked musl binaries
         run: |
-          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace rust:alpine sh -euxc '
+          docker create -w /workspace --name musl_builder rust:alpine sh -euxc '
             apk add --no-cache binutils build-base clang clang-dev cmake git linux-headers ninja perl
-            export RUSTFLAGS="-C target-feature=+crt-static"
-            cargo build --release --locked --no-default-features --features client
-            mv target/release/trojan-rs target/release/trojan-rs-client
-            cargo build --release --locked --no-default-features --features server
-            mv target/release/trojan-rs target/release/trojan-rs-server
-            if readelf -l target/release/trojan-rs-client | grep -q "Requesting program interpreter"; then
+            TARGET=$(rustc -vV | awk "/host:/ {print \$2}")
+            cat << "EOF" > /tmp/rustc-wrapper.sh
+            #!/bin/sh
+            for arg in "$@"; do
+              if [ "$arg" = "--target" ]; then
+                exec rustc "$@" -C target-feature=+crt-static -C link-arg=-static-libstdc++ -C link-arg=-static-libgcc
+              fi
+            done
+            exec rustc "$@" -C target-feature=-crt-static
+            EOF
+            chmod +x /tmp/rustc-wrapper.sh
+            export RUSTC_WRAPPER=/tmp/rustc-wrapper.sh
+            cargo build --target "$TARGET" --release --locked --no-default-features --features client
+            mkdir -p dist
+            cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-client
+            cargo build --target "$TARGET" --release --locked --no-default-features --features server
+            cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-server
+            if readelf -l dist/trojan-rs-client | grep -q "Requesting program interpreter"; then
               echo "client musl binary is dynamically linked" >&2
               exit 1
             fi
-            if readelf -l target/release/trojan-rs-server | grep -q "Requesting program interpreter"; then
+            if readelf -l dist/trojan-rs-server | grep -q "Requesting program interpreter"; then
               echo "server musl binary is dynamically linked" >&2
               exit 1
             fi
+            tar -czf /trojan-rs-client.tar.gz -C dist trojan-rs-client
+            tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
           '
+          docker cp ${{ github.workspace }}/. musl_builder:/workspace/
+          docker start -a musl_builder
+          docker cp musl_builder:/trojan-rs-client.tar.gz ${{ github.workspace }}/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+          docker cp musl_builder:/trojan-rs-server.tar.gz ${{ github.workspace }}/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
+          docker rm musl_builder
 
-      - name: Compress binaries
-        run: |
-          set -euo pipefail
-          tar -C target/release -czf trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
-          tar -C target/release -czf trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
 
       - name: Verify packaged musl binaries on Debian 11
         run: |
+          ls -la ${{ github.workspace }}
           docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
+            ls -la /artifacts
             mkdir -p /tmp/client /tmp/server
             tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
@@ -207,26 +223,30 @@ jobs:
 
       - name: Build binaries against Debian 11 glibc
         run: |
-          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace rust:bullseye sh -euxc '
+          docker create -w /workspace --name gnu_builder rust:bullseye sh -euxc '
             apt-get update
             apt-get install -y --no-install-recommends build-essential clang curl git libclang-dev ninja-build perl pkg-config python3-pip
             python3 -m pip install --no-cache-dir cmake==3.31.6
             cmake --version
             cargo build --release --locked --no-default-features --features client
-            mv target/release/trojan-rs target/release/trojan-rs-client
+            mkdir -p dist
+            cp target/release/trojan-rs dist/trojan-rs-client
             cargo build --release --locked --no-default-features --features server
-            mv target/release/trojan-rs target/release/trojan-rs-server
+            cp target/release/trojan-rs dist/trojan-rs-server
+            tar -czf /trojan-rs-client.tar.gz -C dist trojan-rs-client
+            tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
           '
-
-      - name: Compress binaries
-        run: |
-          set -euo pipefail
-          tar -C target/release -czf trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
-          tar -C target/release -czf trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
+          docker cp ${{ github.workspace }}/. gnu_builder:/workspace/
+          docker start -a gnu_builder
+          docker cp gnu_builder:/trojan-rs-client.tar.gz ${{ github.workspace }}/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+          docker cp gnu_builder:/trojan-rs-server.tar.gz ${{ github.workspace }}/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
+          docker rm gnu_builder
 
       - name: Verify packaged GNU binaries on Debian 11
         run: |
+          ls -la ${{ github.workspace }}
           docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:11 sh -euxc '
+            ls -la /artifacts
             mkdir -p /tmp/client /tmp/server
             tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
