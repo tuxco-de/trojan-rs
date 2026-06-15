@@ -20,16 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_name: trojan-rs
-            asset_suffix: linux-amd64
-            cross_compile: false
-          - os: ubuntu-24.04-arm
-            target: aarch64-unknown-linux-gnu
-            artifact_name: trojan-rs
-            asset_suffix: linux-arm64
-            cross_compile: false
+
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact_name: trojan-rs
@@ -168,6 +159,48 @@ jobs:
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace alpine:latest sh -c " \
             apk add --no-cache git rust cargo gcc g++ cmake make perl bash linux-headers clang clang-dev && \
+            cargo build --release --no-default-features --features client && \
+            mv target/release/trojan-rs target/release/trojan-rs-client && \
+            cargo build --release --no-default-features --features server && \
+            mv target/release/trojan-rs target/release/trojan-rs-server \
+          "
+
+      - name: Compress binaries
+        run: |
+          cd target/release
+          tar -czvf ../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
+          tar -czvf ../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
+          cd ../..
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          generate_release_notes: true
+          files: |
+            *.tar.gz
+
+  build-gnu-legacy:
+    name: Build GNU ${{ matrix.asset_suffix }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_suffix: linux-amd64
+          - os: ubuntu-24.04-arm
+            asset_suffix: linux-arm64
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build binaries in Debian 11 container
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace -w /workspace debian:11 sh -c " \
+            apt-get update && apt-get install -y curl git build-essential cmake clang libclang-dev ninja-build pkg-config && \
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal && \
+            export PATH=\$HOME/.cargo/bin:\$PATH && \
             cargo build --release --no-default-features --features client && \
             mv target/release/trojan-rs target/release/trojan-rs-client && \
             cargo build --release --no-default-features --features server && \
