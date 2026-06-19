@@ -23,6 +23,7 @@ futures-util = "0.3"
 httparse = "1.4"
 uuid = { version = "1.18", default-features = false }
 httpdate = "1.0.3"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
 
 [profile.release]
 lto = true

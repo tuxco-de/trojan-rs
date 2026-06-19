@@ -1,6 +1,7 @@
 use crate::protocol::{
     fallback::FallbackConfig,
     mux::{acceptor::MuxAcceptorConfig, connector::MuxConnectorConfig},
+    reality::RealityAcceptorConfig,
     socks5::acceptor::Socks5AcceptorConfig,
     tls::{acceptor::TrojanTlsAcceptorConfig, connector::TrojanTlsConnectorConfig},
     trojan::{acceptor::TrojanAcceptorConfig, connector::TrojanConnectorConfig},
@@ -28,7 +29,8 @@ pub struct ClientConfig {
 pub struct ServerConfig {
     pub trojan: Option<TrojanAcceptorConfig>,
     pub vless: Option<VlessAcceptorConfig>,
-    pub tls: TrojanTlsAcceptorConfig,
+    pub tls: Option<TrojanTlsAcceptorConfig>,
+    pub reality: Option<RealityAcceptorConfig>,
     pub fallback: Option<FallbackConfig>,
     pub websocket: Option<WebSocketAcceptorConfig>,
     pub mux: Option<MuxAcceptorConfig>,

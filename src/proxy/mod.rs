@@ -12,6 +12,7 @@ use crate::{
     protocol::{
         direct::connector::DirectConnector,
         mux::{acceptor::MuxAcceptor, connector::MuxConnector},
+        reality::RealityAcceptor,
         socks5::acceptor::Socks5Acceptor,
         tls::{acceptor::TrojanTlsAcceptor, connector::TrojanTlsConnector, TlsAlpn},
         trojan::{acceptor::TrojanAcceptor, connector::TrojanConnector},
@@ -57,7 +58,34 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             let config: ServerConfig = toml::from_str(&config_string)
                 .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
             let direct_connector = DirectConnector {};
-            let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
+
+            if let Some(reality) = config.reality {
+                if config.tls.is_some() {
+                    return Err(Error::new("configure either [tls] or [reality], not both").into());
+                }
+                if config.trojan.is_some() {
+                    return Err(Error::new("REALITY server currently supports VLESS only").into());
+                }
+                if config.websocket.is_some() {
+                    return Err(Error::new("REALITY does not support [websocket]").into());
+                }
+                if config.mux.is_some() {
+                    return Err(Error::new("REALITY does not support [mux]").into());
+                }
+                let vless = config
+                    .vless
+                    .ok_or_else(|| Error::new("REALITY server requires [vless]"))?;
+                let reality_server = reality.validate()?;
+                let reality_acceptor = RealityAcceptor::new(reality_server).await?;
+                let vless_acceptor = VlessAcceptor::new(&vless, reality_acceptor)?;
+                run_proxy(vless_acceptor, direct_connector).await?;
+                return Ok(());
+            }
+
+            let tls_config = config
+                .tls
+                .ok_or_else(|| Error::new("server requires [tls] or [reality]"))?;
+            let tls_acceptor = TrojanTlsAcceptor::new(&tls_config).await?;
             let fallback_config = config.fallback.as_ref();
             match (config.trojan, config.vless) {
                 (Some(trojan), None) => {

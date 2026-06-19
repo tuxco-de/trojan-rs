@@ -7,6 +7,7 @@ use crate::error::Error;
 pub mod direct;
 pub mod fallback;
 pub mod mux;
+pub mod reality;
 pub mod socks5;
 pub mod tls;
 pub mod trojan;
