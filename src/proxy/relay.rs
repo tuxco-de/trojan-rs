@@ -1,4 +1,9 @@
-use std::{io, sync::Arc};
+use std::{
+    collections::HashMap,
+    io,
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 use tokio::io::copy_bidirectional_with_sizes;
 
 use crate::protocol::{
@@ -7,12 +12,16 @@ use crate::protocol::{
 use async_trait::async_trait;
 use tokio::net::{TcpStream, UdpSocket};
 
-use super::meter::{MeteredStream, MeteredUdpStream};
+use super::meter::{MeteredStream, TrafficMeter};
 use super::metrics::{global_metrics, ClientMetrics};
 
 const RELAY_BUFFER_SIZE: usize = 0x4000;
 
-async fn copy_udp<R: UdpRead, W: UdpWrite>(r: &mut R, w: &mut W) -> io::Result<()> {
+async fn copy_udp<R: UdpRead, W: UdpWrite>(
+    r: &mut R,
+    w: &mut W,
+    mut meter: Option<&mut TrafficMeter>,
+) -> io::Result<()> {
     let mut buf = [0u8; RELAY_BUFFER_SIZE];
     loop {
         let (len, addr) = r.read_from(&mut buf).await?;
@@ -21,15 +30,37 @@ async fn copy_udp<R: UdpRead, W: UdpWrite>(r: &mut R, w: &mut W) -> io::Result<(
             break;
         }
         w.write_to(&buf[..len], &addr).await?;
+        if let Some(meter) = meter.as_deref_mut() {
+            meter.record(len as u64);
+        }
     }
     Ok(())
 }
 
-pub async fn relay_udp<T: ProxyUdpStream, U: ProxyUdpStream>(a: T, b: U) {
+async fn relay_udp_metered<T: ProxyUdpStream, U: ProxyUdpStream>(
+    a: T,
+    b: U,
+    client_metrics: Arc<ClientMetrics>,
+) {
+    relay_udp_with_meters(
+        a,
+        b,
+        Some(TrafficMeter::upload(client_metrics.clone())),
+        Some(TrafficMeter::download(client_metrics)),
+    )
+    .await;
+}
+
+async fn relay_udp_with_meters<T: ProxyUdpStream, U: ProxyUdpStream>(
+    a: T,
+    b: U,
+    mut upload_meter: Option<TrafficMeter>,
+    mut download_meter: Option<TrafficMeter>,
+) {
     let (mut a_rx, mut a_tx) = a.split();
     let (mut b_rx, mut b_tx) = b.split();
-    let t1 = copy_udp(&mut a_rx, &mut b_tx);
-    let t2 = copy_udp(&mut b_rx, &mut a_tx);
+    let t1 = copy_udp(&mut a_rx, &mut b_tx, upload_meter.as_mut());
+    let t2 = copy_udp(&mut b_rx, &mut a_tx, download_meter.as_mut());
     let e = tokio::select! {
         e = t1 => {e}
         e = t2 => {e}
@@ -54,6 +85,39 @@ pub async fn relay_tcp<T: ProxyTcpStream, U: ProxyTcpStream>(mut a: T, mut b: U)
 #[derive(Clone)]
 pub struct DirectUdpStream {
     inner: Arc<UdpSocket>,
+    resolved_addresses: Arc<Mutex<HashMap<Address, SocketAddr>>>,
+}
+
+impl DirectUdpStream {
+    async fn resolve_address(&self, address: &Address) -> io::Result<SocketAddr> {
+        if let Address::SocketAddress(address) = address {
+            return Ok(*address);
+        }
+
+        if let Some(address) = self
+            .resolved_addresses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(address)
+            .copied()
+        {
+            return Ok(address);
+        }
+
+        let Address::DomainNameAddress(domain, port) = address else {
+            unreachable!();
+        };
+        let resolved = tokio::net::lookup_host((domain.as_str(), *port))
+            .await?
+            .next()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::AddrNotAvailable, "no address found"))?;
+
+        self.resolved_addresses
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(address.clone(), resolved);
+        Ok(resolved)
+    }
 }
 
 #[async_trait]
@@ -67,7 +131,8 @@ impl UdpRead for DirectUdpStream {
 #[async_trait]
 impl UdpWrite for DirectUdpStream {
     async fn write_to(&mut self, buf: &[u8], addr: &Address) -> io::Result<()> {
-        let _ = self.inner.send_to(buf, addr.to_string()).await?;
+        let addr = self.resolve_address(addr).await?;
+        let _ = self.inner.send_to(buf, addr).await?;
         Ok(())
     }
 }
@@ -104,6 +169,9 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                 tokio::spawn(async move {
                     match TcpStream::connect(addr.to_string()).await {
                         Ok(outbound) => {
+                            if let Err(e) = outbound.set_nodelay(true) {
+                                log::debug!("failed to enable TCP_NODELAY for {}: {}", addr, e);
+                            }
                             log::info!("relaying tcp stream to {}", addr);
                             relay_tcp(metered_inbound, outbound).await;
                         }
@@ -119,7 +187,6 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                 let client_id = metrics.generate_id();
                 let client_metrics = Arc::new(ClientMetrics::new(client_id, "UDP".to_string()));
                 metrics.add_client(client_metrics.clone()).await;
-                let metered_inbound = MeteredUdpStream::new(inbound, client_metrics);
 
                 tokio::spawn(async move {
                     match UdpSocket::bind(":::0").await {
@@ -127,8 +194,9 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                             log::info!("relaying udp stream..");
                             let outbound = DirectUdpStream {
                                 inner: Arc::new(socket),
+                                resolved_addresses: Arc::new(Mutex::new(HashMap::new())),
                             };
-                            relay_udp(metered_inbound, outbound).await;
+                            relay_udp_metered(inbound, outbound, client_metrics).await;
                         }
                         Err(e) => {
                             log::error!("failed to relay udp stream: {}", e);
