@@ -124,7 +124,7 @@ impl FallbackPage {
                         content_type: "text/html; charset=utf-8",
                         extra_headers: "Cache-Control: no-cache\r\n",
                         head_only,
-                        body: include_bytes!("../../src/proxy/dashboard.html"),
+                        body: include_bytes!("../../assets/dashboard.html"),
                     },
                     FallbackRoute::ApiStatus { head_only } => {
                         let global = crate::proxy::metrics::global_metrics();
