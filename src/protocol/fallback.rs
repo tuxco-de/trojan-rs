@@ -1,4 +1,5 @@
 use crate::protocol::new_error;
+use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use serde::Deserialize;
 use std::{fs, io, sync::Arc, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -26,6 +27,7 @@ fn default_max_request_size() -> usize {
 #[serde(deny_unknown_fields)]
 pub struct FallbackConfig {
     page: String,
+    pub dashboard_password: Option<String>,
     #[serde(default = "default_request_timeout_secs")]
     pub request_timeout_secs: u64,
     #[serde(default = "default_max_request_size")]
@@ -37,6 +39,7 @@ pub struct FallbackConfig {
 #[derive(Clone)]
 pub struct FallbackPage {
     body: Arc<[u8]>,
+    dashboard_password: Option<Arc<str>>,
     request_timeout: Duration,
     max_request_size: usize,
 }
@@ -51,6 +54,13 @@ impl FallbackPage {
         if config.request_timeout_secs == 0 || config.max_request_size < 256 {
             return Err(new_error("invalid fallback request limits"));
         }
+        if config
+            .dashboard_password
+            .as_ref()
+            .is_some_and(|password| password.is_empty())
+        {
+            return Err(new_error("dashboard password must not be empty"));
+        }
         let body = fs::read(&config.page)?;
         if body.len() > MAX_PAGE_SIZE {
             return Err(new_error(format!(
@@ -60,6 +70,7 @@ impl FallbackPage {
         }
         Ok(Some(Self {
             body: body.into(),
+            dashboard_password: config.dashboard_password.as_deref().map(Arc::from),
             request_timeout: Duration::from_secs(config.request_timeout_secs),
             max_request_size: config.max_request_size,
         }))
@@ -77,6 +88,7 @@ impl FallbackPage {
         prefix: Vec<u8>,
     ) {
         let body = self.body.clone();
+        let dashboard_password = self.dashboard_password.clone();
         let request_timeout = self.request_timeout;
         let max_request_size = self.max_request_size;
         tokio::spawn(async move {
@@ -107,10 +119,9 @@ impl FallbackPage {
                     request
                 };
 
-                let route = route_request(&request);
-                
+                let route = route_request(&request, dashboard_password.as_deref());
                 let json_buffer;
-                
+
                 let response = match route {
                     FallbackRoute::Page { head_only } => ResponseSpec {
                         status: "200 OK",
@@ -129,7 +140,7 @@ impl FallbackPage {
                     FallbackRoute::ApiStatus { head_only } => {
                         let global = crate::proxy::metrics::global_metrics();
                         let clients_map = global.clients.read().await;
-                        
+
                         #[derive(serde::Serialize)]
                         struct ClientInfo {
                             id: u64,
@@ -147,25 +158,33 @@ impl FallbackPage {
                         }
 
                         let mut clients = Vec::new();
-                        for (_, client) in clients_map.iter() {
+                        for client in clients_map.values() {
                             clients.push(ClientInfo {
                                 id: client.id,
                                 addr: client.addr.clone(),
                                 uptime_secs: client.start_time.elapsed().as_secs(),
-                                upload_bytes: client.upload_bytes.load(std::sync::atomic::Ordering::Relaxed),
-                                download_bytes: client.download_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                                upload_bytes: client
+                                    .upload_bytes
+                                    .load(std::sync::atomic::Ordering::Relaxed),
+                                download_bytes: client
+                                    .download_bytes
+                                    .load(std::sync::atomic::Ordering::Relaxed),
                             });
                         }
                         clients.sort_by_key(|c| std::cmp::Reverse(c.id));
 
                         let resp = MetricsResponse {
-                            total_upload: global.total_upload.load(std::sync::atomic::Ordering::Relaxed),
-                            total_download: global.total_download.load(std::sync::atomic::Ordering::Relaxed),
+                            total_upload: global
+                                .total_upload
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            total_download: global
+                                .total_download
+                                .load(std::sync::atomic::Ordering::Relaxed),
                             clients,
                         };
-                        
+
                         json_buffer = serde_json::to_string(&resp).unwrap_or_default();
-                        
+
                         ResponseSpec {
                             status: "200 OK",
                             content_type: "application/json; charset=utf-8",
@@ -202,6 +221,13 @@ impl FallbackPage {
                         head_only: false,
                         body: BAD_REQUEST_BODY,
                     },
+                    FallbackRoute::Unauthorized { head_only } => ResponseSpec {
+                        status: "401 Unauthorized",
+                        content_type: "text/html; charset=utf-8",
+                        extra_headers: "WWW-Authenticate: Basic realm=\"trojan-rs dashboard\"\r\nCache-Control: no-store\r\n",
+                        head_only,
+                        body: b"<!doctype html><title>401 Unauthorized</title><h1>Unauthorized</h1>",
+                    },
                 };
                 write_response(&mut stream, response).await
             })
@@ -228,9 +254,10 @@ enum FallbackRoute {
     NotFound { head_only: bool },
     MethodNotAllowed,
     BadRequest,
+    Unauthorized { head_only: bool },
 }
 
-fn route_request(request: &[u8]) -> FallbackRoute {
+fn route_request(request: &[u8], dashboard_password: Option<&str>) -> FallbackRoute {
     let Some(header_end) = find_header_end(request) else {
         return FallbackRoute::BadRequest;
     };
@@ -269,11 +296,63 @@ fn route_request(request: &[u8]) -> FallbackRoute {
         .map_or(parsed.path.unwrap_or_default(), |(path, _)| path);
     match path {
         "/" | "/index.html" => FallbackRoute::Page { head_only },
-        "/dashboard" => FallbackRoute::Dashboard { head_only },
-        "/api/status" => FallbackRoute::ApiStatus { head_only },
+        "/dashboard" => {
+            if is_dashboard_authorized(parsed.headers, dashboard_password) {
+                FallbackRoute::Dashboard { head_only }
+            } else if dashboard_password.is_some() {
+                FallbackRoute::Unauthorized { head_only }
+            } else {
+                FallbackRoute::NotFound { head_only }
+            }
+        }
+        "/api/status" => {
+            if is_dashboard_authorized(parsed.headers, dashboard_password) {
+                FallbackRoute::ApiStatus { head_only }
+            } else if dashboard_password.is_some() {
+                FallbackRoute::Unauthorized { head_only }
+            } else {
+                FallbackRoute::NotFound { head_only }
+            }
+        }
         "/robots.txt" => FallbackRoute::Robots { head_only },
         _ => FallbackRoute::NotFound { head_only },
     }
+}
+
+fn is_dashboard_authorized(
+    headers: &[httparse::Header<'_>],
+    dashboard_password: Option<&str>,
+) -> bool {
+    let Some(password) = dashboard_password else {
+        return false;
+    };
+    let Some(header) = headers
+        .iter()
+        .find(|header| header.name.eq_ignore_ascii_case("authorization"))
+    else {
+        return false;
+    };
+    let Ok(value) = std::str::from_utf8(header.value) else {
+        return false;
+    };
+    let Some((scheme, token)) = value.split_once(' ') else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("basic") {
+        return false;
+    };
+    let expected = BASE64_STANDARD.encode(format!("admin:{password}"));
+    constant_time_eq(token.trim().as_bytes(), expected.as_bytes())
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    let mut diff = a.len() ^ b.len();
+    for i in 0..a.len().max(b.len()) {
+        let left = a.get(i).copied().unwrap_or(0);
+        let right = b.get(i).copied().unwrap_or(0);
+        diff |= (left ^ right) as usize;
+    }
+    diff == 0
 }
 
 pub fn looks_like_http(request: &[u8]) -> bool {
@@ -351,32 +430,63 @@ mod tests {
     #[test]
     fn parses_valid_get() {
         let req = b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        assert_eq!(route_request(req), FallbackRoute::Page { head_only: false });
+        assert_eq!(
+            route_request(req, None),
+            FallbackRoute::Page { head_only: false }
+        );
     }
 
     #[test]
     fn parses_head_request() {
         let req = b"HEAD / HTTP/1.1\r\nHost: example.com\r\n\r\n";
-        assert_eq!(route_request(req), FallbackRoute::Page { head_only: true });
+        assert_eq!(
+            route_request(req, None),
+            FallbackRoute::Page { head_only: true }
+        );
     }
 
     #[test]
     fn routes_static_and_error_responses() {
         assert_eq!(
-            route_request(b"GET /robots.txt HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            route_request(
+                b"GET /robots.txt HTTP/1.1\r\nHost: example.com\r\n\r\n",
+                None
+            ),
             FallbackRoute::Robots { head_only: false }
         );
         assert_eq!(
-            route_request(b"GET /missing HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            route_request(b"GET /missing HTTP/1.1\r\nHost: example.com\r\n\r\n", None),
             FallbackRoute::NotFound { head_only: false }
         );
         assert_eq!(
-            route_request(b"POST / HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            route_request(b"POST / HTTP/1.1\r\nHost: example.com\r\n\r\n", None),
             FallbackRoute::MethodNotAllowed
         );
         assert_eq!(
-            route_request(b"GET / HTTP/1.1\r\n\r\n"),
+            route_request(b"GET / HTTP/1.1\r\n\r\n", None),
             FallbackRoute::BadRequest
+        );
+    }
+
+    #[test]
+    fn protects_dashboard_routes() {
+        let request = b"GET /dashboard HTTP/1.1\r\nHost: example.com\r\n\r\n";
+        assert_eq!(
+            route_request(request, None),
+            FallbackRoute::NotFound { head_only: false }
+        );
+        assert_eq!(
+            route_request(request, Some("secret")),
+            FallbackRoute::Unauthorized { head_only: false }
+        );
+
+        let token = BASE64_STANDARD.encode("admin:secret");
+        let request = format!(
+            "GET /api/status HTTP/1.1\r\nHost: example.com\r\nAuthorization: Basic {token}\r\n\r\n"
+        );
+        assert_eq!(
+            route_request(request.as_bytes(), Some("secret")),
+            FallbackRoute::ApiStatus { head_only: false }
         );
     }
 

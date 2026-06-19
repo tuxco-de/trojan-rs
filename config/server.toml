@@ -19,6 +19,8 @@ key = "key.pem"
 # optional: serve /, /index.html and /robots.txt for ordinary HTTPS requests
 [fallback]
 page = "config/camouflage.html"
+# optional: enables /dashboard and /api/status with HTTP Basic Auth user "admin"
+# dashboard_password = "replace-with-a-strong-dashboard-password"
 # request_timeout_secs = 10
 # max_request_size = 8192
 

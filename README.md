@@ -97,8 +97,10 @@ Trojan 与 VLESS 的入口行为不同：
 
 程序内置了一个实时监控面板和 JSON API。由于默认与主代理（443端口）使用同一个监听器，并且通过相同的 Fallback 机制处理，你只需通过 HTTPS 直接访问相应路径即可：
 
-- `GET /api/status`: 会返回当前所有活动连接和全局统计的 JSON 数据。
-- `GET /dashboard`: 返回内置的 HTML 可视化面板。
+- `GET /api/status`: 会返回当前所有活动连接和全局统计的 JSON 数据，需要 `[fallback] dashboard_password` 鉴权。
+- `GET /dashboard`: 返回内置的 HTML 可视化面板，需要 `[fallback] dashboard_password` 鉴权。
+
+dashboard/API 使用 HTTP Basic Auth，用户名固定为 `admin`。未配置 `dashboard_password` 时，这两个路由返回 404，不对公网暴露管理信息。
 
 如果未匹配这两个路径且未形成合法的代理握手，将回退处理：
 
@@ -164,6 +166,7 @@ handshake_timeout_secs = 10
 
 [fallback]
 page = "/var/www/camouflage.html"
+dashboard_password = "replace-with-a-strong-dashboard-password"
 request_timeout_secs = 10
 max_request_size = 8192
 
@@ -197,6 +200,7 @@ path = "/api/events"
 
 [fallback]
 page = "/var/www/camouflage.html"
+dashboard_password = "replace-with-a-strong-dashboard-password"
 ```
 
 使用 VLESS 时不要同时配置 `[trojan]` 或 `[mux]`；Trojan 模式可以单独启用 `[mux]`。

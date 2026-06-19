@@ -27,7 +27,7 @@
             min-height: 100vh;
             display: flex;
             flex-direction: column;
-            background-image: 
+            background-image:
                 radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.15) 0px, transparent 50%),
                 radial-gradient(at 100% 100%, rgba(139, 92, 246, 0.15) 0px, transparent 50%);
             background-attachment: fixed;
@@ -324,15 +324,14 @@
                 const res = await fetch('/api/status');
                 if (!res.ok) throw new Error('Network response was not ok');
                 const data = await res.json();
-                
+
                 const now = Date.now();
                 const dt = (now - prevData.timestamp) / 1000;
-                
+
                 if (dt > 0) {
-                    // Calculate global speeds
                     const dDl = data.total_download - prevData.total_download;
                     const dUl = data.total_upload - prevData.total_upload;
-                    
+
                     document.getElementById('speed-down').textContent = formatBytes(Math.max(0, dDl) / dt) + '/s';
                     document.getElementById('speed-up').textContent = formatBytes(Math.max(0, dUl) / dt) + '/s';
                 }
@@ -342,42 +341,45 @@
 
                 const tbody = document.getElementById('clients-body');
                 if (data.clients.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No active connections</td></tr>';
+                    const row = document.createElement('tr');
+                    const cell = document.createElement('td');
+                    cell.colSpan = 7;
+                    cell.className = 'empty-state';
+                    cell.textContent = 'No active connections';
+                    row.appendChild(cell);
+                    tbody.replaceChildren(row);
                 } else {
-                    let html = '';
                     const newClientsMap = {};
-                    
+
+                    const fragment = document.createDocumentFragment();
                     data.clients.forEach(c => {
                         let speedDl = 0;
                         let speedUl = 0;
-                        
+
                         if (prevData.clients[c.id] && dt > 0) {
                             speedDl = Math.max(0, c.download_bytes - prevData.clients[c.id].dl) / dt;
                             speedUl = Math.max(0, c.upload_bytes - prevData.clients[c.id].ul) / dt;
                         }
-                        
+
                         newClientsMap[c.id] = { dl: c.download_bytes, ul: c.upload_bytes };
-                        
-                        html += `
-                            <tr>
-                                <td><span class="client-id">#${c.id}</span></td>
-                                <td>${c.addr}</td>
-                                <td>${formatTime(c.uptime_secs)}</td>
-                                <td><span class="speed-down">${formatBytes(c.download_bytes)}</span></td>
-                                <td><span class="speed-up">${formatBytes(c.upload_bytes)}</span></td>
-                                <td>${formatBytes(speedDl)}/s</td>
-                                <td>${formatBytes(speedUl)}/s</td>
-                            </tr>
-                        `;
+
+                        const row = document.createElement('tr');
+                        appendTextCell(row, `#${c.id}`, 'client-id');
+                        appendTextCell(row, c.addr);
+                        appendTextCell(row, formatTime(c.uptime_secs));
+                        appendTextCell(row, formatBytes(c.download_bytes), 'speed-down');
+                        appendTextCell(row, formatBytes(c.upload_bytes), 'speed-up');
+                        appendTextCell(row, formatBytes(speedDl) + '/s');
+                        appendTextCell(row, formatBytes(speedUl) + '/s');
+                        fragment.appendChild(row);
                     });
-                    tbody.innerHTML = html;
+                    tbody.replaceChildren(fragment);
                     prevData.clients = newClientsMap;
                 }
 
                 prevData.total_download = data.total_download;
                 prevData.total_upload = data.total_upload;
                 prevData.timestamp = now;
-                
             } catch (error) {
                 console.error('Error fetching status:', error);
                 document.querySelector('.status-badge').innerHTML = 'Offline';
@@ -388,7 +390,19 @@
             }
         }
 
-        // Initial fetch and set interval
+        function appendTextCell(row, text, spanClass) {
+            const cell = document.createElement('td');
+            if (spanClass) {
+                const span = document.createElement('span');
+                span.className = spanClass;
+                span.textContent = text;
+                cell.appendChild(span);
+            } else {
+                cell.textContent = text;
+            }
+            row.appendChild(cell);
+        }
+
         updateDashboard();
         setInterval(updateDashboard, 1000);
     </script>

@@ -23,4 +23,3 @@ pub struct ServerConfig {
     pub websocket: Option<WebSocketAcceptorConfig>,
     pub mux: Option<MuxAcceptorConfig>,
 }
-

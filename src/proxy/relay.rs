@@ -7,7 +7,7 @@ use crate::protocol::{
 use async_trait::async_trait;
 use tokio::net::{TcpStream, UdpSocket};
 
-use super::meter::MeteredStream;
+use super::meter::{MeteredStream, MeteredUdpStream};
 use super::metrics::{global_metrics, ClientMetrics};
 
 const RELAY_BUFFER_SIZE: usize = 0x4000;
@@ -98,7 +98,7 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                 let client_id = metrics.generate_id();
                 let client_metrics = Arc::new(ClientMetrics::new(client_id, addr.to_string()));
                 metrics.add_client(client_metrics.clone()).await;
-                
+
                 let metered_inbound = MeteredStream::new(inbound, client_metrics);
 
                 tokio::spawn(async move {
@@ -115,13 +115,11 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                 });
             }
             Ok(AcceptResult::Udp(inbound)) => {
-                // Not wrapping UDP with MeteredStream as MeteredStream currently implements AsyncRead/AsyncWrite for TCP.
-                // It would be possible to wrap UdpRead/UdpWrite but the request focuses on API and UI framework.
-                // Let's at least track the connection start for UDP.
                 let metrics = global_metrics();
                 let client_id = metrics.generate_id();
                 let client_metrics = Arc::new(ClientMetrics::new(client_id, "UDP".to_string()));
                 metrics.add_client(client_metrics.clone()).await;
+                let metered_inbound = MeteredUdpStream::new(inbound, client_metrics);
 
                 tokio::spawn(async move {
                     match UdpSocket::bind(":::0").await {
@@ -130,7 +128,7 @@ pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
                             let outbound = DirectUdpStream {
                                 inner: Arc::new(socket),
                             };
-                            relay_udp(inbound, outbound).await;
+                            relay_udp(metered_inbound, outbound).await;
                         }
                         Err(e) => {
                             log::error!("failed to relay udp stream: {}", e);

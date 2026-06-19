@@ -3,15 +3,10 @@ use crate::protocol::{
     AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream,
 };
 use async_trait::async_trait;
-use rustls::{
-    server::{ClientHello, ResolvesServerCert},
-    sign::CertifiedKey,
-    ServerConfig,
-};
-use rustls_pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::{server::ResolvesServerCertUsingSni, sign::CertifiedKey, ServerConfig};
+use rustls_pki_types::CertificateDer;
 use serde::Deserialize;
 use std::{
-    fmt::Debug,
     fs::File,
     io::{self, BufReader},
     sync::Arc,
@@ -32,23 +27,6 @@ pub struct TrojanTlsAcceptorConfig {
     handshake_timeout_secs: u64,
 }
 
-#[derive(Debug)]
-struct SniResolver {
-    expected_sni: String,
-    certified_key: Arc<CertifiedKey>,
-}
-
-impl ResolvesServerCert for SniResolver {
-    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        if let Some(sni) = client_hello.server_name() {
-            if sni.eq_ignore_ascii_case(&self.expected_sni) {
-                return Some(self.certified_key.clone());
-            }
-        }
-        None
-    }
-}
-
 pub struct TrojanTlsAcceptor {
     tls_acceptor: TlsAcceptor,
     tcp_listener: TcpListener,
@@ -65,13 +43,10 @@ impl ProxyAcceptor for TrojanTlsAcceptor {
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         let (stream, addr) = self.tcp_listener.accept().await?;
         log::info!("tcp connection from {}", addr);
-        let stream = timeout(
-            self.handshake_timeout,
-            self.tls_acceptor.accept(stream),
-        )
-        .await
-        .map_err(|_| new_error("TLS handshake timed out"))?
-        .map_err(new_error)?;
+        let stream = timeout(self.handshake_timeout, self.tls_acceptor.accept(stream))
+            .await
+            .map_err(|_| new_error("TLS handshake timed out"))?
+            .map_err(new_error)?;
         Ok(AcceptResult::Tcp((stream, Address::SocketAddress(addr))))
     }
 }
@@ -83,48 +58,29 @@ impl TrojanTlsAcceptor {
         log::debug!("tls listen addr = {}", config.addr);
 
         let cert_file = &mut BufReader::new(File::open(&config.cert).map_err(new_error)?);
-        let key_file = &mut BufReader::new(File::open(&config.key).map_err(new_error)?);
 
         let certs: Vec<CertificateDer> = rustls_pemfile::certs(cert_file)
             .collect::<Result<Vec<_>, _>>()
             .map_err(new_error)?;
 
-        let mut keys: Vec<PrivateKeyDer> = rustls_pemfile::pkcs8_private_keys(key_file)
-            .map(|key| key.map(PrivateKeyDer::Pkcs8))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(new_error)?;
-
-        if keys.is_empty() {
-            let key_file = &mut BufReader::new(File::open(&config.key).map_err(new_error)?);
-            keys = rustls_pemfile::rsa_private_keys(key_file)
-                .map(|key| key.map(PrivateKeyDer::Pkcs1))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(new_error)?;
-        }
-
-        let key = keys
-            .into_iter()
-            .next()
+        let key_file = &mut BufReader::new(File::open(&config.key).map_err(new_error)?);
+        let key = rustls_pemfile::private_key(key_file)
+            .map_err(new_error)?
             .ok_or_else(|| new_error("no private key found"))?;
 
         let provider = rustls::crypto::aws_lc_rs::default_provider();
-        let certified_key = provider
-            .key_provider
-            .load_private_key(key)
-            .map_err(|e| new_error(format!("failed to load private key: {:?}", e)))?;
-            
-        let certified_key = Arc::new(CertifiedKey::new(certs, certified_key));
-
-        let resolver = SniResolver {
-            expected_sni: config.sni.clone(),
-            certified_key,
-        };
+        let certified_key = CertifiedKey::from_der(certs, key, &provider)
+            .map_err(|e| new_error(format!("invalid TLS certificate/key: {e}")))?;
+        let mut resolver = ResolvesServerCertUsingSni::new();
+        resolver
+            .add(&config.sni, certified_key)
+            .map_err(|e| new_error(format!("certificate does not match configured sni: {e}")))?;
 
         let mut server_config = ServerConfig::builder()
             .with_no_client_auth()
-            .with_cert_resolver(Arc::new(resolver));
+            .with_cert_resolver(std::sync::Arc::new(resolver));
 
-        server_config.alpn_protocols = vec![b"\x08http/1.1".to_vec()];
+        server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
         Ok(Self {
