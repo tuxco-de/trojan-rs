@@ -1,5 +1,4 @@
 pub mod acceptor;
-pub mod connector;
 
 use bytes::{Buf, Bytes};
 use serde::Deserialize;

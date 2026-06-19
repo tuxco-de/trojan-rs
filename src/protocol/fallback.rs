@@ -108,6 +108,9 @@ impl FallbackPage {
                 };
 
                 let route = route_request(&request);
+                
+                let json_buffer;
+                
                 let response = match route {
                     FallbackRoute::Page { head_only } => ResponseSpec {
                         status: "200 OK",
@@ -115,6 +118,61 @@ impl FallbackPage {
                         extra_headers: "Cache-Control: no-cache\r\n",
                         head_only,
                         body: &body,
+                    },
+                    FallbackRoute::Dashboard { head_only } => ResponseSpec {
+                        status: "200 OK",
+                        content_type: "text/html; charset=utf-8",
+                        extra_headers: "Cache-Control: no-cache\r\n",
+                        head_only,
+                        body: include_bytes!("../../src/proxy/dashboard.html"),
+                    },
+                    FallbackRoute::ApiStatus { head_only } => {
+                        let global = crate::proxy::metrics::global_metrics();
+                        let clients_map = global.clients.read().await;
+                        
+                        #[derive(serde::Serialize)]
+                        struct ClientInfo {
+                            id: u64,
+                            addr: String,
+                            uptime_secs: u64,
+                            upload_bytes: u64,
+                            download_bytes: u64,
+                        }
+
+                        #[derive(serde::Serialize)]
+                        struct MetricsResponse {
+                            total_upload: u64,
+                            total_download: u64,
+                            clients: Vec<ClientInfo>,
+                        }
+
+                        let mut clients = Vec::new();
+                        for (_, client) in clients_map.iter() {
+                            clients.push(ClientInfo {
+                                id: client.id,
+                                addr: client.addr.clone(),
+                                uptime_secs: client.start_time.elapsed().as_secs(),
+                                upload_bytes: client.upload_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                                download_bytes: client.download_bytes.load(std::sync::atomic::Ordering::Relaxed),
+                            });
+                        }
+                        clients.sort_by_key(|c| std::cmp::Reverse(c.id));
+
+                        let resp = MetricsResponse {
+                            total_upload: global.total_upload.load(std::sync::atomic::Ordering::Relaxed),
+                            total_download: global.total_download.load(std::sync::atomic::Ordering::Relaxed),
+                            clients,
+                        };
+                        
+                        json_buffer = serde_json::to_string(&resp).unwrap_or_default();
+                        
+                        ResponseSpec {
+                            status: "200 OK",
+                            content_type: "application/json; charset=utf-8",
+                            extra_headers: "Cache-Control: no-store\r\n",
+                            head_only,
+                            body: json_buffer.as_bytes(),
+                        }
                     },
                     FallbackRoute::Robots { head_only } => ResponseSpec {
                         status: "200 OK",
@@ -164,6 +222,8 @@ impl FallbackPage {
 #[derive(Debug, Eq, PartialEq)]
 enum FallbackRoute {
     Page { head_only: bool },
+    Dashboard { head_only: bool },
+    ApiStatus { head_only: bool },
     Robots { head_only: bool },
     NotFound { head_only: bool },
     MethodNotAllowed,
@@ -209,6 +269,8 @@ fn route_request(request: &[u8]) -> FallbackRoute {
         .map_or(parsed.path.unwrap_or_default(), |(path, _)| path);
     match path {
         "/" | "/index.html" => FallbackRoute::Page { head_only },
+        "/dashboard" => FallbackRoute::Dashboard { head_only },
+        "/api/status" => FallbackRoute::ApiStatus { head_only },
         "/robots.txt" => FallbackRoute::Robots { head_only },
         _ => FallbackRoute::NotFound { head_only },
     }

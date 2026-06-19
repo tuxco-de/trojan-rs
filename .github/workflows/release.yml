@@ -71,18 +71,6 @@ jobs:
           choco install cmake ninja llvm nasm -y
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-      - name: Build client binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features client
-
-      - name: Rename client binary (Unix)
-        if: matrix.os != 'windows-latest'
-        run: mv target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/${{ matrix.target }}/release/trojan-rs-client
-
-      - name: Rename client binary (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: pwsh
-        run: Move-Item -LiteralPath "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" -Destination "target/${{ matrix.target }}/release/trojan-rs-client.exe"
-
       - name: Build server binary
         run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features server
 
@@ -100,9 +88,7 @@ jobs:
         run: |
           set -euo pipefail
           cd target/${{ matrix.target }}/release
-          ./trojan-rs-client --version
           ./trojan-rs-server --version
-          tar -czf ../../../trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz trojan-rs-client
           tar -czf ../../../trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz trojan-rs-server
 
       - name: Verify and compress binaries (Windows)
@@ -111,9 +97,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           Set-Location "target/${{ matrix.target }}/release"
-          ./trojan-rs-client.exe --version
           ./trojan-rs-server.exe --version
-          Compress-Archive -Path trojan-rs-client.exe -DestinationPath ../../../trojan-rs-client-${{ matrix.asset_suffix }}.zip
           Compress-Archive -Path trojan-rs-server.exe -DestinationPath ../../../trojan-rs-server-${{ matrix.asset_suffix }}.zip
 
       - name: Upload packaged binaries
@@ -123,7 +107,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           path: |
-            trojan-rs-client-${{ matrix.asset_suffix }}.*
             trojan-rs-server-${{ matrix.asset_suffix }}.*
 
   build-musl:
@@ -150,18 +133,15 @@ jobs:
             TARGET=$(rustc -vV | awk "/host:/ {print \$2}")
             chmod +x scripts/musl-rustc-wrapper.sh
             export RUSTC_WRAPPER=/workspace/scripts/musl-rustc-wrapper.sh
-            cargo build --target "$TARGET" --release --locked --no-default-features --features client
-            mkdir -p dist
-            cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-client
+
             cargo build --target "$TARGET" --release --locked --no-default-features --features server
             cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-server
-            file dist/trojan-rs-client dist/trojan-rs-server
-            tar -czf /trojan-rs-client.tar.gz -C dist trojan-rs-client
+            file dist/trojan-rs-server
             tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
           '
           docker cp ${{ github.workspace }}/. musl_builder:/workspace/
           docker start -a musl_builder
-          docker cp musl_builder:/trojan-rs-client.tar.gz ${{ github.workspace }}/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+
           docker cp musl_builder:/trojan-rs-server.tar.gz ${{ github.workspace }}/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
           docker rm musl_builder
 
@@ -169,10 +149,9 @@ jobs:
       - name: Verify packaged musl binaries on Debian 12
         run: |
           docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:12 sh -euxc '
-            mkdir -p /tmp/client /tmp/server
-            tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
+            mkdir -p /tmp/server
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
-            /tmp/client/trojan-rs-client --version
+
             /tmp/server/trojan-rs-server --version
           '
 
@@ -183,7 +162,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           path: |
-            trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
             trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
 
   build-gnu-legacy:
@@ -208,27 +186,24 @@ jobs:
           docker create -w /workspace --name gnu_builder rust:bookworm sh -euxc '
             apt-get update
             apt-get install -y --no-install-recommends build-essential cmake clang curl git libclang-dev ninja-build perl pkg-config
-            cargo build --release --locked --no-default-features --features client
-            mkdir -p dist
-            cp target/release/trojan-rs dist/trojan-rs-client
+
             cargo build --release --locked --no-default-features --features server
             cp target/release/trojan-rs dist/trojan-rs-server
-            tar -czf /trojan-rs-client.tar.gz -C dist trojan-rs-client
+
             tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
           '
           docker cp ${{ github.workspace }}/. gnu_builder:/workspace/
           docker start -a gnu_builder
-          docker cp gnu_builder:/trojan-rs-client.tar.gz ${{ github.workspace }}/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
+
           docker cp gnu_builder:/trojan-rs-server.tar.gz ${{ github.workspace }}/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
           docker rm gnu_builder
 
       - name: Verify packaged GNU binaries on Debian 12
         run: |
           docker run --rm -v "${{ github.workspace }}:/artifacts:ro" debian:12 sh -euxc '
-            mkdir -p /tmp/client /tmp/server
-            tar -xzf /artifacts/trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz -C /tmp/client
+            mkdir -p /tmp/server
             tar -xzf /artifacts/trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz -C /tmp/server
-            /tmp/client/trojan-rs-client --version
+
             /tmp/server/trojan-rs-server --version
           '
 
@@ -239,7 +214,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           path: |
-            trojan-rs-client-${{ matrix.asset_suffix }}.tar.gz
             trojan-rs-server-${{ matrix.asset_suffix }}.tar.gz
 
   publish:
@@ -262,19 +236,12 @@ jobs:
         run: |
           set -euo pipefail
           expected=(
-            trojan-rs-client-darwin-amd64.tar.gz
             trojan-rs-server-darwin-amd64.tar.gz
-            trojan-rs-client-darwin-arm64.tar.gz
             trojan-rs-server-darwin-arm64.tar.gz
-            trojan-rs-client-windows-amd64.zip
             trojan-rs-server-windows-amd64.zip
-            trojan-rs-client-linux-amd64.tar.gz
             trojan-rs-server-linux-amd64.tar.gz
-            trojan-rs-client-linux-arm64.tar.gz
             trojan-rs-server-linux-arm64.tar.gz
-            trojan-rs-client-linux-musl-amd64.tar.gz
             trojan-rs-server-linux-musl-amd64.tar.gz
-            trojan-rs-client-linux-musl-arm64.tar.gz
             trojan-rs-server-linux-musl-arm64.tar.gz
           )
           for asset in "${expected[@]}"; do

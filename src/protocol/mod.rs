@@ -4,10 +4,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::Error;
 
-pub mod direct;
 pub mod fallback;
 pub mod mux;
-pub mod socks5;
 pub mod tls;
 pub mod trojan;
 pub mod vless;
@@ -18,6 +16,12 @@ pub fn new_error<T: ToString>(message: T) -> io::Error {
 }
 
 pub trait ProxyTcpStream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
+
+impl ProxyTcpStream for tokio::net::TcpStream {}
+
+#[cfg(test)]
+impl ProxyTcpStream for tokio::io::DuplexStream {}
+
 pub mod address;
 
 pub use self::address::Address;
@@ -40,13 +44,7 @@ pub trait ProxyUdpStream: Send + Unpin {
     async fn close(self) -> io::Result<()>;
 }
 
-#[async_trait]
-pub trait ProxyConnector: Send + Sync {
-    type TS: ProxyTcpStream + 'static;
-    type US: ProxyUdpStream + 'static;
-    async fn connect_tcp(&self, addr: &Address) -> io::Result<Self::TS>;
-    async fn connect_udp(&self) -> io::Result<Self::US>;
-}
+
 
 pub enum AcceptResult<T: ProxyTcpStream, U: ProxyUdpStream> {
     Tcp((T, Address)),

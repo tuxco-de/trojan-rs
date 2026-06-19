@@ -1,20 +1,25 @@
 use crate::protocol::{
-    tls::{default_handshake_timeout_secs, get_cipher_list, new_error, validate_sni},
+    tls::{default_handshake_timeout_secs, new_error, validate_sni},
     AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream,
 };
 use async_trait::async_trait;
-use boring::{
-    ssl::{
-        select_next_proto, AlpnError, NameType, SniError, SslAcceptor, SslAlert, SslFiletype,
-        SslMethod, SslVersion,
-    },
-    x509::X509,
+use rustls::{
+    server::{ClientHello, ResolvesServerCert},
+    sign::CertifiedKey,
+    ServerConfig,
 };
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use serde::Deserialize;
-use std::{fs, io, time::Duration};
+use std::{
+    fmt::Debug,
+    fs::File,
+    io::{self, BufReader},
+    sync::Arc,
+    time::Duration,
+};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
-use tokio_boring::SslStream;
+use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -23,22 +28,38 @@ pub struct TrojanTlsAcceptorConfig {
     sni: String,
     cert: String,
     key: String,
-    cipher: Option<Vec<String>>,
     #[serde(default = "default_handshake_timeout_secs")]
     handshake_timeout_secs: u64,
 }
 
+#[derive(Debug)]
+struct SniResolver {
+    expected_sni: String,
+    certified_key: Arc<CertifiedKey>,
+}
+
+impl ResolvesServerCert for SniResolver {
+    fn resolve(&self, client_hello: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
+        if let Some(sni) = client_hello.server_name() {
+            if sni.eq_ignore_ascii_case(&self.expected_sni) {
+                return Some(self.certified_key.clone());
+            }
+        }
+        None
+    }
+}
+
 pub struct TrojanTlsAcceptor {
-    tls_acceptor: SslAcceptor,
+    tls_acceptor: TlsAcceptor,
     tcp_listener: TcpListener,
     handshake_timeout: Duration,
 }
 
-impl ProxyTcpStream for SslStream<TcpStream> {}
+impl ProxyTcpStream for TlsStream<TcpStream> {}
 
 #[async_trait]
 impl ProxyAcceptor for TrojanTlsAcceptor {
-    type TS = SslStream<TcpStream>;
+    type TS = TlsStream<TcpStream>;
     type US = DummyUdpStream;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
@@ -46,7 +67,7 @@ impl ProxyAcceptor for TrojanTlsAcceptor {
         log::info!("tcp connection from {}", addr);
         let stream = timeout(
             self.handshake_timeout,
-            tokio_boring::accept(&self.tls_acceptor, stream),
+            self.tls_acceptor.accept(stream),
         )
         .await
         .map_err(|_| new_error("TLS handshake timed out"))?
@@ -61,52 +82,51 @@ impl TrojanTlsAcceptor {
         let tcp_listener = TcpListener::bind(config.addr.to_owned()).await?;
         log::debug!("tls listen addr = {}", config.addr);
 
-        let mut builder =
-            SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).map_err(new_error)?;
-        builder
-            .set_min_proto_version(Some(SslVersion::TLS1_2))
-            .map_err(new_error)?;
-        builder
-            .set_certificate_chain_file(&config.cert)
-            .map_err(new_error)?;
-        builder
-            .set_private_key_file(&config.key, SslFiletype::PEM)
-            .map_err(new_error)?;
-        builder.check_private_key().map_err(new_error)?;
+        let cert_file = &mut BufReader::new(File::open(&config.cert).map_err(new_error)?);
+        let key_file = &mut BufReader::new(File::open(&config.key).map_err(new_error)?);
 
-        let certificate_pem = fs::read(&config.cert)?;
-        let certificates = X509::stack_from_pem(&certificate_pem).map_err(new_error)?;
-        let leaf = certificates
-            .first()
-            .ok_or_else(|| new_error("certificate file contains no certificates"))?;
-        if !leaf.check_host(&config.sni).map_err(new_error)? {
-            return Err(new_error(format!(
-                "certificate does not match configured sni {}",
-                config.sni
-            )));
-        }
-        if let Some(cipher_list) = get_cipher_list(config.cipher.as_deref())? {
-            builder
-                .set_strict_cipher_list(&cipher_list)
+        let certs: Vec<CertificateDer> = rustls_pemfile::certs(cert_file)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(new_error)?;
+
+        let mut keys: Vec<PrivateKeyDer> = rustls_pemfile::pkcs8_private_keys(key_file)
+            .map(|key| key.map(PrivateKeyDer::Pkcs8))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(new_error)?;
+
+        if keys.is_empty() {
+            let key_file = &mut BufReader::new(File::open(&config.key).map_err(new_error)?);
+            keys = rustls_pemfile::rsa_private_keys(key_file)
+                .map(|key| key.map(PrivateKeyDer::Pkcs1))
+                .collect::<Result<Vec<_>, _>>()
                 .map_err(new_error)?;
         }
-        builder.set_alpn_select_callback(|_, client| {
-            select_next_proto(b"\x08http/1.1", client).ok_or(AlpnError::NOACK)
-        });
-        let expected_sni = config.sni.clone();
-        builder.set_servername_callback(move |ssl, alert| {
-            if ssl
-                .servername(NameType::HOST_NAME)
-                .is_some_and(|name| name.eq_ignore_ascii_case(&expected_sni))
-            {
-                Ok(())
-            } else {
-                *alert = SslAlert::UNRECOGNIZED_NAME;
-                Err(SniError::ALERT_FATAL)
-            }
-        });
 
-        let tls_acceptor = builder.build();
+        let key = keys
+            .into_iter()
+            .next()
+            .ok_or_else(|| new_error("no private key found"))?;
+
+        let provider = rustls::crypto::aws_lc_rs::default_provider();
+        let certified_key = provider
+            .key_provider
+            .load_private_key(key)
+            .map_err(|e| new_error(format!("failed to load private key: {:?}", e)))?;
+            
+        let certified_key = Arc::new(CertifiedKey::new(certs, certified_key));
+
+        let resolver = SniResolver {
+            expected_sni: config.sni.clone(),
+            certified_key,
+        };
+
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_cert_resolver(Arc::new(resolver));
+
+        server_config.alpn_protocols = vec![b"\x08http/1.1".to_vec()];
+
+        let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
         Ok(Self {
             tcp_listener,
             tls_acceptor,

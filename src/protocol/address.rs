@@ -2,13 +2,13 @@ use bytes::{Buf, BufMut};
 use std::{
     fmt::{self, Debug, Formatter},
     io::{self, Cursor},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, ToSocketAddrs},
     str::FromStr,
     vec,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use super::new_error;
+
 use crate::error::Error;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -17,6 +17,13 @@ pub enum Address {
     SocketAddress(SocketAddr),
     /// Domain name address
     DomainNameAddress(String, u16),
+}
+
+#[cfg(test)]
+impl Address {
+    pub fn new_dummy_address() -> Self {
+        Address::DomainNameAddress(String::new(), 0)
+    }
 }
 
 /// Parse `Address` error
@@ -63,10 +70,6 @@ impl Address {
     pub const ADDR_TYPE_DOMAIN_NAME: u8 = 3;
     pub const ADDR_TYPE_IPV6: u8 = 4;
 
-    #[inline]
-    pub fn new_dummy_address() -> Address {
-        Address::SocketAddress(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 0))
-    }
 
     #[inline]
     pub fn serialized_len(&self) -> usize {
@@ -152,57 +155,6 @@ impl Address {
         }
     }
 
-    pub fn read_from_buf(buf: &[u8]) -> io::Result<Self> {
-        let mut cur = Cursor::new(buf);
-        if cur.remaining() < 1 + 1 {
-            return Err(new_error("invalid address buffer"));
-        }
-        let addr_type = cur.get_u8();
-        match addr_type {
-            Self::ADDR_TYPE_IPV4 => {
-                if cur.remaining() < 4 + 2 {
-                    return Err(new_error("IPv4 address too short"));
-                }
-                let addr = Ipv4Addr::new(cur.get_u8(), cur.get_u8(), cur.get_u8(), cur.get_u8());
-                let port = cur.get_u16();
-                Ok(Address::SocketAddress(SocketAddr::V4(SocketAddrV4::new(
-                    addr, port,
-                ))))
-            }
-            Self::ADDR_TYPE_DOMAIN_NAME => {
-                let domain_len = cur.get_u8() as usize;
-                if cur.remaining() < domain_len {
-                    return Err(new_error("Domain name too short"));
-                }
-                let mut domain_name = vec![0u8; domain_len];
-                cur.copy_to_slice(&mut domain_name);
-                let port = cur.get_u16();
-                let domain_name = String::from_utf8(domain_name)
-                    .map_err(|e| new_error(format!("invalid utf8 domain name {}", e)))?;
-                Ok(Address::DomainNameAddress(domain_name, port))
-            }
-            Self::ADDR_TYPE_IPV6 => {
-                if cur.remaining() < 8 * 2 + 2 {
-                    return Err(new_error("IPv4 address too short"));
-                }
-                let addr = Ipv6Addr::new(
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                    cur.get_u16(),
-                );
-                let port = cur.get_u16();
-                Ok(Address::SocketAddress(SocketAddr::V6(SocketAddrV6::new(
-                    addr, port, 0, 0,
-                ))))
-            }
-            _ => Err(new_error(format!("unknown address type {}", addr_type))),
-        }
-    }
 
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         match self {

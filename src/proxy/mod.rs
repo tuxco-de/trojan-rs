@@ -1,5 +1,7 @@
 pub mod config;
 pub mod relay;
+pub mod metrics;
+pub mod meter;
 
 use log::LevelFilter;
 use std::{
@@ -10,13 +12,11 @@ use std::{
 use crate::{
     error::Error,
     protocol::{
-        direct::connector::DirectConnector,
-        mux::{acceptor::MuxAcceptor, connector::MuxConnector},
-        socks5::acceptor::Socks5Acceptor,
-        tls::{acceptor::TrojanTlsAcceptor, connector::TrojanTlsConnector, TlsAlpn},
-        trojan::{acceptor::TrojanAcceptor, connector::TrojanConnector},
+        mux::acceptor::MuxAcceptor,
+        tls::acceptor::TrojanTlsAcceptor,
+        trojan::acceptor::TrojanAcceptor,
         vless::acceptor::VlessAcceptor,
-        websocket::{acceptor::WebSocketAcceptor, connector::WebSocketConnector},
+        websocket::acceptor::WebSocketAcceptor,
     },
 };
 
@@ -50,95 +50,62 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             .filter_level(LevelFilter::Debug)
             .try_init();
     }
-    match config.mode.as_str() {
-        #[cfg(feature = "server")]
-        "server" => {
-            log::debug!("server mode");
-            let config: ServerConfig = toml::from_str(&config_string)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-            let direct_connector = DirectConnector {};
-            let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
-            let fallback_config = config.fallback.as_ref();
-            match (config.trojan, config.vless) {
-                (Some(trojan), None) => {
-                    if let Some(websocket) = config.websocket {
-                        let ws_acceptor =
-                            WebSocketAcceptor::new(&websocket, fallback_config, tls_acceptor)?;
-                        let trojan_acceptor =
-                            TrojanAcceptor::new(&trojan, fallback_config, ws_acceptor)?;
-                        if let Some(mux) = config.mux {
-                            let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
-                            run_proxy(mux_acceptor, direct_connector).await?;
-                        } else {
-                            run_proxy(trojan_acceptor, direct_connector).await?;
-                        }
-                    } else {
-                        let trojan_acceptor =
-                            TrojanAcceptor::new(&trojan, fallback_config, tls_acceptor)?;
-                        if let Some(mux) = config.mux {
-                            let mux_acceptor = MuxAcceptor::new(trojan_acceptor, &mux)?;
-                            run_proxy(mux_acceptor, direct_connector).await?;
-                        } else {
-                            run_proxy(trojan_acceptor, direct_connector).await?;
-                        }
-                    }
-                }
-                (None, Some(vless)) => {
-                    if config.mux.is_some() {
-                        return Err(Error::new("VLESS does not support trojan-go mux").into());
-                    }
-                    let websocket = config.websocket.ok_or_else(|| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidInput,
-                            "VLESS server requires [websocket]",
-                        )
-                    })?;
-                    let ws_acceptor =
-                        WebSocketAcceptor::new_strict(&websocket, fallback_config, tls_acceptor)?;
-                    let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
-                    run_proxy(vless_acceptor, direct_connector).await?;
-                }
-                (Some(_), Some(_)) => {
-                    return Err(Error::new("configure either [trojan] or [vless], not both").into());
-                }
-                (None, None) => {
-                    return Err(Error::new("server requires [trojan] or [vless]").into());
-                }
+    if config.mode.as_str() != "server" {
+        return Err(Error::new(format!("invalid mode: {}", config.mode.as_str())).into());
+    }
+
+    log::debug!("server mode");
+    let config: ServerConfig = toml::from_str(&config_string)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+
+    let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
+    let fallback_config = config.fallback.as_ref();
+
+    macro_rules! start_proxy {
+        ($acceptor:expr, $config:expr) => {
+            if let Some(mux) = &$config.mux {
+                let mux_acceptor = MuxAcceptor::new($acceptor, mux)?;
+                run_proxy(mux_acceptor).await?;
+            } else {
+                run_proxy($acceptor).await?;
+            }
+        };
+    }
+
+    match (config.trojan, config.vless) {
+        (Some(trojan), None) => {
+            if let Some(websocket) = config.websocket {
+                let ws_acceptor =
+                    WebSocketAcceptor::new(&websocket, fallback_config, tls_acceptor)?;
+                let trojan_acceptor =
+                    TrojanAcceptor::new(&trojan, fallback_config, ws_acceptor)?;
+                start_proxy!(trojan_acceptor, config);
+            } else {
+                let trojan_acceptor =
+                    TrojanAcceptor::new(&trojan, fallback_config, tls_acceptor)?;
+                start_proxy!(trojan_acceptor, config);
             }
         }
-        #[cfg(feature = "client")]
-        "client" => {
-            log::debug!("client mode");
-            let config: ClientConfig = toml::from_str(&config_string)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-            let socks5_acceptor = Socks5Acceptor::new(&config.socks5).await?;
-            let tls_alpn = if config.websocket.is_some() {
-                TlsAlpn::Http11
-            } else {
-                TlsAlpn::None
-            };
-            let tls_connector = TrojanTlsConnector::new(&config.tls, tls_alpn)?;
-            if let Some(ws_config) = &config.websocket {
-                let ws_connector = WebSocketConnector::new(ws_config, tls_connector)?;
-                let trojan_connector = TrojanConnector::new(&config.trojan, ws_connector)?;
-                if let Some(mux_config) = &config.mux {
-                    let mux_connector = MuxConnector::new(mux_config, trojan_connector).unwrap();
-                    run_proxy(socks5_acceptor, mux_connector).await?;
-                } else {
-                    run_proxy(socks5_acceptor, trojan_connector).await?;
-                }
-            } else {
-                let trojan_connector = TrojanConnector::new(&config.trojan, tls_connector)?;
-                if let Some(mux_config) = &config.mux {
-                    let mux_connector = MuxConnector::new(mux_config, trojan_connector).unwrap();
-                    run_proxy(socks5_acceptor, mux_connector).await?;
-                } else {
-                    run_proxy(socks5_acceptor, trojan_connector).await?;
-                }
+        (None, Some(vless)) => {
+            if config.mux.is_some() {
+                return Err(Error::new("VLESS does not support trojan-go mux").into());
             }
+            let websocket = config.websocket.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "VLESS server requires [websocket]",
+                )
+            })?;
+            let ws_acceptor =
+                WebSocketAcceptor::new_strict(&websocket, fallback_config, tls_acceptor)?;
+            let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
+            run_proxy(vless_acceptor).await?;
         }
-        _ => {
-            log::error!("invalid mode: {}", config.mode.as_str());
+        (Some(_), Some(_)) => {
+            return Err(Error::new("configure either [trojan] or [vless], not both").into());
+        }
+        (None, None) => {
+            return Err(Error::new("server requires [trojan] or [vless]").into());
         }
     }
     Ok(())

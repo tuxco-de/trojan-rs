@@ -2,8 +2,13 @@ use std::{io, sync::Arc};
 use tokio::io::copy_bidirectional_with_sizes;
 
 use crate::protocol::{
-    AcceptResult, ProxyAcceptor, ProxyConnector, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite,
+    AcceptResult, Address, ProxyAcceptor, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite,
 };
+use async_trait::async_trait;
+use tokio::net::{TcpStream, UdpSocket};
+
+use super::meter::MeteredStream;
+use super::metrics::{global_metrics, ClientMetrics};
 
 const RELAY_BUFFER_SIZE: usize = 0x4000;
 
@@ -46,39 +51,92 @@ pub async fn relay_tcp<T: ProxyTcpStream, U: ProxyTcpStream>(mut a: T, mut b: U)
     log::info!("tcp session ends");
 }
 
-pub async fn run_proxy<I: ProxyAcceptor, O: ProxyConnector + 'static>(
-    acceptor: I,
-    connector: O,
-) -> io::Result<()> {
-    let connector = Arc::new(connector);
+#[derive(Clone)]
+pub struct DirectUdpStream {
+    inner: Arc<UdpSocket>,
+}
+
+#[async_trait]
+impl UdpRead for DirectUdpStream {
+    async fn read_from(&mut self, buf: &mut [u8]) -> io::Result<(usize, Address)> {
+        let (len, addr) = self.inner.recv_from(buf).await?;
+        Ok((len, Address::SocketAddress(addr)))
+    }
+}
+
+#[async_trait]
+impl UdpWrite for DirectUdpStream {
+    async fn write_to(&mut self, buf: &[u8], addr: &Address) -> io::Result<()> {
+        let _ = self.inner.send_to(buf, addr.to_string()).await?;
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl ProxyUdpStream for DirectUdpStream {
+    type R = Self;
+    type W = Self;
+
+    fn split(self) -> (Self::R, Self::W) {
+        (self.clone(), self)
+    }
+
+    fn reunite(r: Self::R, _: Self::W) -> Self {
+        r
+    }
+
+    async fn close(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+pub async fn run_proxy<I: ProxyAcceptor>(acceptor: I) -> io::Result<()> {
     loop {
         match acceptor.accept().await {
             Ok(AcceptResult::Tcp((inbound, addr))) => {
-                let connector = connector.clone();
+                let metrics = global_metrics();
+                let client_id = metrics.generate_id();
+                let client_metrics = Arc::new(ClientMetrics::new(client_id, addr.to_string()));
+                metrics.add_client(client_metrics.clone()).await;
+                
+                let metered_inbound = MeteredStream::new(inbound, client_metrics);
+
                 tokio::spawn(async move {
-                    match connector.connect_tcp(&addr).await {
+                    match TcpStream::connect(addr.to_string()).await {
                         Ok(outbound) => {
                             log::info!("relaying tcp stream to {}", addr);
-                            relay_tcp(inbound, outbound).await;
+                            relay_tcp(metered_inbound, outbound).await;
                         }
                         Err(e) => {
                             log::error!("failed to relay tcp stream to {}: {}", addr, e);
                         }
                     }
+                    global_metrics().remove_client(client_id).await;
                 });
             }
             Ok(AcceptResult::Udp(inbound)) => {
-                let connector = connector.clone();
+                // Not wrapping UDP with MeteredStream as MeteredStream currently implements AsyncRead/AsyncWrite for TCP.
+                // It would be possible to wrap UdpRead/UdpWrite but the request focuses on API and UI framework.
+                // Let's at least track the connection start for UDP.
+                let metrics = global_metrics();
+                let client_id = metrics.generate_id();
+                let client_metrics = Arc::new(ClientMetrics::new(client_id, "UDP".to_string()));
+                metrics.add_client(client_metrics.clone()).await;
+
                 tokio::spawn(async move {
-                    match connector.connect_udp().await {
-                        Ok(outbound) => {
+                    match UdpSocket::bind(":::0").await {
+                        Ok(socket) => {
                             log::info!("relaying udp stream..");
+                            let outbound = DirectUdpStream {
+                                inner: Arc::new(socket),
+                            };
                             relay_udp(inbound, outbound).await;
                         }
                         Err(e) => {
                             log::error!("failed to relay udp stream: {}", e);
                         }
                     }
+                    global_metrics().remove_client(client_id).await;
                 });
             }
             Err(e) => {

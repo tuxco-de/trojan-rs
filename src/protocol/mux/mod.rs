@@ -19,10 +19,10 @@ use std::{
     cmp::min,
     collections::HashMap,
     io::{self, Cursor},
-    num::Wrapping,
+
     pin::Pin,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, Ordering},
         Arc,
     },
     task::{Context, Poll},
@@ -32,7 +32,6 @@ use super::{trojan::UdpHeader, Address, ProxyTcpStream, ProxyUdpStream, UdpRead,
 use crate::error::Error;
 
 pub mod acceptor;
-pub mod connector;
 
 fn new_error<T: ToString>(message: T) -> io::Error {
     Error::new(format!("mux: {}", message.to_string())).into()
@@ -72,25 +71,6 @@ impl RequestHeader {
             CMD_UDP_ASSOCIATE => Ok(Self::UdpAssociate),
             _ => Err(new_error("invalid cmd")),
         }
-    }
-
-    async fn write_to<W>(&self, w: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let dummy_addr = Address::new_dummy_address();
-        let (cmd, addr) = match self {
-            RequestHeader::TcpConnect(addr) => (CMD_TCP_CONNECT, addr),
-            RequestHeader::UdpAssociate => (CMD_UDP_ASSOCIATE, &dummy_addr),
-        };
-        let mut buf = Vec::with_capacity(1 + addr.serialized_len());
-        let cursor = &mut buf;
-
-        cursor.put_u8(cmd);
-        addr.write_to_buf(cursor);
-
-        w.write_all(&buf).await?;
-        Ok(())
     }
 }
 
@@ -178,20 +158,6 @@ impl MuxFrame {
     }
 }
 
-fn new_key<T>(map: &HashMap<u32, T>, hint: &AtomicU32) -> u32 {
-    let init_hint = hint.load(Ordering::Relaxed);
-    let mut key = Wrapping(init_hint + 1);
-    loop {
-        if !map.contains_key(&key.0) {
-            hint.store(key.0, Ordering::Relaxed);
-            return key.0;
-        }
-        key.0 += 1;
-        if key.0 == init_hint {
-            panic!();
-        }
-    }
-}
 
 type WriteFuture = Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>;
 
@@ -498,11 +464,7 @@ impl MuxStreamHandle {
 struct MuxHandle {
     read_handle: JoinHandle<io::Result<()>>,
     write_handle: JoinHandle<io::Result<()>>,
-    write_tx: Sender<MuxFrame>,
     accept_stream_rx: Arc<Mutex<Receiver<MuxStream>>>,
-    mux_map: Arc<Mutex<HashMap<u32, MuxStreamHandle>>>,
-    closed: Arc<AtomicBool>,
-    stream_id_hint: Arc<AtomicU32>,
 }
 
 impl Drop for MuxHandle {
@@ -654,34 +616,8 @@ impl MuxHandle {
         Self {
             read_handle,
             write_handle,
-            write_tx,
             accept_stream_rx: Arc::new(Mutex::new(accept_stream_rx)),
-            mux_map,
-            closed,
-            stream_id_hint: Arc::new(AtomicU32::new(0)),
         }
-    }
-
-    async fn generate_stream_id(&self) -> u32 {
-        let mux_map = self.mux_map.lock().await;
-
-        new_key(&mux_map, &self.stream_id_hint)
-    }
-
-    async fn connect(&self) -> io::Result<MuxStream> {
-        let stream_id = self.generate_stream_id().await;
-        let (tx, rx) = channel(PRIVATE_CHANNEL_LEN);
-        let frame = MuxFrame::Sync(SyncFrame { stream_id });
-        self.write_tx
-            .send(frame)
-            .await
-            .map_err(|_| io::ErrorKind::ConnectionReset)?;
-        let (stream, closed) = MuxStream::new(stream_id, self.write_tx.clone(), rx);
-        self.mux_map
-            .lock()
-            .await
-            .insert(stream_id, MuxStreamHandle { closed, tx });
-        Ok(stream)
     }
 
     async fn accept(&self) -> io::Result<MuxStream> {
@@ -690,30 +626,5 @@ impl MuxHandle {
         } else {
             Err(io::ErrorKind::ConnectionReset.into())
         }
-    }
-
-    #[inline]
-    async fn established_streams(&self) -> usize {
-        self.mux_map.lock().await.len()
-    }
-
-    #[inline]
-    fn is_closed(&self) -> bool {
-        self.closed.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    async fn close(&self) {
-        self.closed.store(true, Ordering::Relaxed);
-
-        // drop inner
-        self.read_handle.abort();
-        self.write_handle.abort();
-
-        let mut mux_map = self.mux_map.lock().await;
-        for stream_handle in mux_map.values() {
-            stream_handle.close();
-        }
-        mux_map.clear();
     }
 }

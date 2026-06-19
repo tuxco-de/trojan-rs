@@ -87,7 +87,7 @@ mod tests {
     use crate::protocol::vless::VlessUdpStream;
     use crate::protocol::websocket::acceptor::{WebSocketAcceptor, WebSocketAcceptorConfig};
     use crate::protocol::{
-        AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream, ProxyUdpStream,
+        AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyUdpStream,
         UdpRead, UdpWrite,
     };
     use async_trait::async_trait;
@@ -101,7 +101,7 @@ mod tests {
     use tokio_tungstenite::{client_async, tungstenite::Message};
     use uuid::Uuid;
 
-    impl ProxyTcpStream for DuplexStream {}
+
 
     struct SingleStreamAcceptor {
         stream: Arc<Mutex<Option<DuplexStream>>>,

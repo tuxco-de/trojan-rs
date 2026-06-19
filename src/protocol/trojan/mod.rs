@@ -8,7 +8,6 @@ use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadH
 use super::{Address, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite};
 
 pub mod acceptor;
-pub mod connector;
 
 const HASH_STR_LEN: usize = 56;
 
@@ -58,8 +57,8 @@ const CMD_UDP_ASSOCIATE: u8 = 0x03;
 /// o  DST.PORT desired destination port in network octet order
 /// ```
 enum RequestHeader {
-    TcpConnect([u8; HASH_STR_LEN], Address),
-    UdpAssociate([u8; HASH_STR_LEN]),
+    TcpConnect((), Address),
+    UdpAssociate(()),
 }
 
 impl RequestHeader {
@@ -110,36 +109,13 @@ impl RequestHeader {
         stream.read_exact(&mut crlf_buf).await?;
 
         match cmd_buf[0] {
-            CMD_TCP_CONNECT => Ok(Self::TcpConnect(hash_buf, addr)),
-            CMD_UDP_ASSOCIATE => Ok(Self::UdpAssociate(hash_buf)),
+            CMD_TCP_CONNECT => Ok(Self::TcpConnect((), addr)),
+            CMD_UDP_ASSOCIATE => Ok(Self::UdpAssociate(())),
             _ => Err(new_error("invalid command")),
         }
     }
 
-    async fn write_to<W>(&self, w: &mut W) -> io::Result<()>
-    where
-        W: AsyncWrite + Unpin,
-    {
-        let udp_dummy_addr = Address::new_dummy_address();
-        let (hash, addr, cmd) = match self {
-            RequestHeader::TcpConnect(hash, addr) => (hash, addr, CMD_TCP_CONNECT),
-            RequestHeader::UdpAssociate(hash) => (hash, &udp_dummy_addr, CMD_UDP_ASSOCIATE),
-        };
 
-        let header_len = HASH_STR_LEN + 2 + 1 + addr.serialized_len() + 2;
-        let mut buf = Vec::with_capacity(header_len);
-
-        let cursor = &mut buf;
-        let crlf = b"\r\n";
-        cursor.put_slice(hash);
-        cursor.put_slice(crlf);
-        cursor.put_u8(cmd);
-        addr.write_to_buf(cursor);
-        cursor.put_slice(crlf);
-
-        w.write_all(&buf).await?;
-        Ok(())
-    }
 }
 
 /// ```plain
