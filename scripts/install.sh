@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.2.8"
+SCRIPT_VERSION="1.3.0"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -630,7 +630,9 @@ generate_config() {
     if [ "$PROTO_CHOICE" == "2" ]; then
         # vless
         UUID=$(generate_uuid)
+        DASHBOARD_PASS=$(generate_password)
         echo -e "${SUCCESS} 已为您自动生成 VLESS UUID: ${MAGENTA}${UUID}${PLAIN}"
+        echo -e "${SUCCESS} 已为您自动生成 Dashboard 密码: ${MAGENTA}${DASHBOARD_PASS}${PLAIN}"
         cat > "${config_temp}" <<EOF
 mode = "server"
 log_level = "info"
@@ -648,6 +650,7 @@ path = "${escaped_path}"
 
 [fallback]
 page = "${INSTALL_DIR}/camouflage.html"
+dashboard_password = "${DASHBOARD_PASS}"
 EOF
 
     else
@@ -658,6 +661,8 @@ EOF
             PASSWORD=$(generate_password)
             echo -e "${SUCCESS} 已为您自动生成随机密码: ${MAGENTA}${PASSWORD}${PLAIN}"
         fi
+        DASHBOARD_PASS=$(generate_password)
+        echo -e "${SUCCESS} 已为您自动生成 Dashboard 密码: ${MAGENTA}${DASHBOARD_PASS}${PLAIN}"
         escaped_secret=$(toml_escape "${PASSWORD}")
 
         cat > "${config_temp}" <<EOF
@@ -677,6 +682,7 @@ path = "${escaped_path}"
 
 [fallback]
 page = "${INSTALL_DIR}/camouflage.html"
+dashboard_password = "${DASHBOARD_PASS}"
 EOF
     fi
 

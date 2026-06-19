@@ -72,7 +72,7 @@ jobs:
           "LIBCLANG_PATH=C:\Program Files\LLVM\bin" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Build server binary
-        run: cargo build --release --locked --target ${{ matrix.target }} --no-default-features --features server
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Rename server binary (Unix)
         if: matrix.os != 'windows-latest'
@@ -134,7 +134,8 @@ jobs:
             chmod +x scripts/musl-rustc-wrapper.sh
             export RUSTC_WRAPPER=/workspace/scripts/musl-rustc-wrapper.sh
 
-            cargo build --target "$TARGET" --release --locked --no-default-features --features server
+            cargo build --target "$TARGET" --release --locked
+            mkdir -p dist
             cp "target/$TARGET/release/trojan-rs" dist/trojan-rs-server
             file dist/trojan-rs-server
             tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server
@@ -187,7 +188,8 @@ jobs:
             apt-get update
             apt-get install -y --no-install-recommends build-essential cmake clang curl git libclang-dev ninja-build perl pkg-config
 
-            cargo build --release --locked --no-default-features --features server
+            cargo build --release --locked
+            mkdir -p dist
             cp target/release/trojan-rs dist/trojan-rs-server
 
             tar -czf /trojan-rs-server.tar.gz -C dist trojan-rs-server

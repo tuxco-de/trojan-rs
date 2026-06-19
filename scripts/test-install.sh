@@ -80,6 +80,7 @@ generate_config >/dev/null <<'EOF'
 EOF
 grep -Eq 'addr = "(0\.0\.0\.0:443|\[::\]:443)"' "${CONFIG_FILE}"
 grep -Eq 'password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
+grep -Eq 'dashboard_password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
 grep -q 'path = "/ws"' "${CONFIG_FILE}"
 
 printf '%s\n' 'example.com' >"${DOMAIN_FILE}"
@@ -96,6 +97,7 @@ generate_config >/dev/null <<'EOF'
 EOF
 grep -Eq 'addr = "(0\.0\.0\.0:8443|\[::\]:8443)"' "${CONFIG_FILE}"
 grep -Eq 'users = \["[0-9a-f-]{36}"\]' "${CONFIG_FILE}"
+grep -Eq 'dashboard_password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
 grep -q 'path = "/vless"' "${CONFIG_FILE}"
 
 deploy_camouflage >/dev/null
