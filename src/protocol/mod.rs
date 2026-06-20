@@ -6,6 +6,7 @@ use crate::error::Error;
 
 pub mod fallback;
 pub mod mux;
+pub mod singbox_mux;
 pub mod tls;
 pub mod trojan;
 pub mod vless;

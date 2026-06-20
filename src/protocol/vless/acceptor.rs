@@ -16,8 +16,15 @@ fn default_handshake_timeout_secs() -> u64 {
 #[derive(Deserialize)]
 pub struct VlessAcceptorConfig {
     users: Vec<String>,
+    multiplex: Option<VlessMultiplexConfig>,
     #[serde(default = "default_handshake_timeout_secs")]
     handshake_timeout_secs: u64,
+}
+
+#[derive(Deserialize)]
+pub struct VlessMultiplexConfig {
+    #[serde(default)]
+    enabled: bool,
 }
 
 pub struct VlessAcceptor<T: ProxyAcceptor> {
@@ -78,6 +85,14 @@ impl<T: ProxyAcceptor> VlessAcceptor<T> {
             handshake_timeout: Duration::from_secs(config.handshake_timeout_secs),
             inner,
         })
+    }
+}
+
+impl VlessAcceptorConfig {
+    pub fn sing_box_mux_enabled(&self) -> bool {
+        self.multiplex
+            .as_ref()
+            .is_some_and(|multiplex| multiplex.enabled)
     }
 }
 

@@ -1,5 +1,7 @@
 use crate::protocol::new_error;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
+use bytes::Bytes;
+use http::{Method, Response, StatusCode};
 use serde::Deserialize;
 use std::{fs, io, sync::Arc, time::Duration};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -239,6 +241,182 @@ impl FallbackPage {
             }
         });
     }
+
+    pub fn serve_h2<T: AsyncRead + AsyncWrite + Send + Unpin + 'static>(&self, stream: T) {
+        let page = self.clone();
+        tokio::spawn(async move {
+            let mut connection =
+                match timeout(page.request_timeout, h2::server::handshake(stream)).await {
+                    Ok(Ok(connection)) => connection,
+                    Ok(Err(error)) => {
+                        log::debug!("HTTP/2 fallback handshake failed: {}", error);
+                        return;
+                    }
+                    Err(_) => {
+                        log::debug!("HTTP/2 fallback handshake timed out");
+                        return;
+                    }
+                };
+            while let Some(request) = connection.accept().await {
+                let (request, respond) = match request {
+                    Ok(request) => request,
+                    Err(error) => {
+                        log::debug!("HTTP/2 fallback request failed: {}", error);
+                        break;
+                    }
+                };
+                let route = route_h2_request(&request, page.dashboard_password.as_deref());
+                if let Err(error) = page.write_h2_response(route, respond).await {
+                    log::debug!("HTTP/2 fallback response failed: {}", error);
+                    break;
+                }
+            }
+        });
+    }
+
+    async fn write_h2_response(
+        &self,
+        route: FallbackRoute,
+        mut respond: h2::server::SendResponse<Bytes>,
+    ) -> io::Result<()> {
+        let (status, content_type, cache_control, www_authenticate, head_only, body) = match route {
+            FallbackRoute::Page { head_only } => (
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                "no-cache",
+                None,
+                head_only,
+                self.body.to_vec(),
+            ),
+            FallbackRoute::Dashboard { head_only } => (
+                StatusCode::OK,
+                "text/html; charset=utf-8",
+                "no-cache",
+                None,
+                head_only,
+                include_bytes!("../../assets/dashboard.html").to_vec(),
+            ),
+            FallbackRoute::ApiStatus { head_only } => (
+                StatusCode::OK,
+                "application/json; charset=utf-8",
+                "no-store",
+                None,
+                head_only,
+                metrics_json().await.into_bytes(),
+            ),
+            FallbackRoute::Robots { head_only } => (
+                StatusCode::OK,
+                "text/plain; charset=utf-8",
+                "public, max-age=3600",
+                None,
+                head_only,
+                ROBOTS_BODY.to_vec(),
+            ),
+            FallbackRoute::NotFound { head_only } => (
+                StatusCode::NOT_FOUND,
+                "text/html; charset=utf-8",
+                "no-cache",
+                None,
+                head_only,
+                NOT_FOUND_BODY.to_vec(),
+            ),
+            FallbackRoute::MethodNotAllowed => (
+                StatusCode::METHOD_NOT_ALLOWED,
+                "text/html; charset=utf-8",
+                "no-cache",
+                None,
+                false,
+                METHOD_NOT_ALLOWED_BODY.to_vec(),
+            ),
+            FallbackRoute::BadRequest => (
+                StatusCode::BAD_REQUEST,
+                "text/html; charset=utf-8",
+                "no-cache",
+                None,
+                false,
+                BAD_REQUEST_BODY.to_vec(),
+            ),
+            FallbackRoute::Unauthorized { head_only } => (
+                StatusCode::UNAUTHORIZED,
+                "text/html; charset=utf-8",
+                "no-store",
+                Some("Basic realm=\"trojan-rs dashboard\""),
+                head_only,
+                b"<!doctype html><title>401 Unauthorized</title><h1>Unauthorized</h1>".to_vec(),
+            ),
+        };
+        let mut response = Response::builder()
+            .status(status)
+            .header("content-type", content_type)
+            .header("content-length", body.len())
+            .header("cache-control", cache_control)
+            .header("server", "nginx")
+            .header("x-content-type-options", "nosniff");
+        if status == StatusCode::METHOD_NOT_ALLOWED {
+            response = response.header("allow", "GET, HEAD");
+        }
+        if let Some(value) = www_authenticate {
+            response = response.header("www-authenticate", value);
+        }
+        let mut send = respond
+            .send_response(response.body(()).unwrap(), head_only)
+            .map_err(h2_error)?;
+        if !head_only {
+            send.send_data(Bytes::from(body), true).map_err(h2_error)?;
+        }
+        Ok(())
+    }
+}
+
+async fn metrics_json() -> String {
+    let global = crate::proxy::metrics::global_metrics();
+    let clients_map = global.clients.read().await;
+
+    #[derive(serde::Serialize)]
+    struct ClientInfo {
+        id: u64,
+        addr: String,
+        uptime_secs: u64,
+        upload_bytes: u64,
+        download_bytes: u64,
+    }
+
+    #[derive(serde::Serialize)]
+    struct MetricsResponse {
+        total_upload: u64,
+        total_download: u64,
+        clients: Vec<ClientInfo>,
+    }
+
+    let mut clients = Vec::new();
+    for client in clients_map.values() {
+        clients.push(ClientInfo {
+            id: client.id,
+            addr: client.addr.clone(),
+            uptime_secs: client.start_time.elapsed().as_secs(),
+            upload_bytes: client
+                .upload_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            download_bytes: client
+                .download_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+        });
+    }
+    clients.sort_by_key(|client| std::cmp::Reverse(client.id));
+    serde_json::to_string(&MetricsResponse {
+        total_upload: global
+            .total_upload
+            .load(std::sync::atomic::Ordering::Relaxed),
+        total_download: global
+            .total_download
+            .load(std::sync::atomic::Ordering::Relaxed),
+        clients,
+    })
+    .unwrap_or_default()
+}
+
+fn h2_error(error: h2::Error) -> io::Error {
+    io::Error::new(io::ErrorKind::ConnectionAborted, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -319,13 +497,63 @@ fn route_request(request: &[u8], dashboard_password: Option<&str>) -> FallbackRo
     }
 }
 
+fn route_h2_request(
+    request: &http::Request<h2::RecvStream>,
+    dashboard_password: Option<&str>,
+) -> FallbackRoute {
+    let authorization = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok());
+    route_h2_parts(
+        request.method(),
+        request.uri().path(),
+        authorization,
+        dashboard_password,
+    )
+}
+
+fn route_h2_parts(
+    method: &Method,
+    path: &str,
+    authorization: Option<&str>,
+    dashboard_password: Option<&str>,
+) -> FallbackRoute {
+    let head_only = method == Method::HEAD;
+    if method != Method::GET && !head_only {
+        return FallbackRoute::MethodNotAllowed;
+    }
+    let authorized =
+        authorization.is_some_and(|value| is_dashboard_authorized_value(value, dashboard_password));
+    match path {
+        "/" | "/index.html" => FallbackRoute::Page { head_only },
+        "/dashboard" => {
+            if authorized {
+                FallbackRoute::Dashboard { head_only }
+            } else if dashboard_password.is_some() {
+                FallbackRoute::Unauthorized { head_only }
+            } else {
+                FallbackRoute::NotFound { head_only }
+            }
+        }
+        "/api/status" => {
+            if authorized {
+                FallbackRoute::ApiStatus { head_only }
+            } else if dashboard_password.is_some() {
+                FallbackRoute::Unauthorized { head_only }
+            } else {
+                FallbackRoute::NotFound { head_only }
+            }
+        }
+        "/robots.txt" => FallbackRoute::Robots { head_only },
+        _ => FallbackRoute::NotFound { head_only },
+    }
+}
+
 fn is_dashboard_authorized(
     headers: &[httparse::Header<'_>],
     dashboard_password: Option<&str>,
 ) -> bool {
-    let Some(password) = dashboard_password else {
-        return false;
-    };
     let Some(header) = headers
         .iter()
         .find(|header| header.name.eq_ignore_ascii_case("authorization"))
@@ -333,6 +561,13 @@ fn is_dashboard_authorized(
         return false;
     };
     let Ok(value) = std::str::from_utf8(header.value) else {
+        return false;
+    };
+    is_dashboard_authorized_value(value, dashboard_password)
+}
+
+fn is_dashboard_authorized_value(value: &str, dashboard_password: Option<&str>) -> bool {
+    let Some(password) = dashboard_password else {
         return false;
     };
     let Some((scheme, token)) = value.split_once(' ') else {
@@ -443,6 +678,62 @@ mod tests {
             route_request(req, None),
             FallbackRoute::Page { head_only: true }
         );
+    }
+
+    #[test]
+    fn routes_http2_requests_like_http1() {
+        assert_eq!(
+            route_h2_parts(&Method::GET, "/", None, None),
+            FallbackRoute::Page { head_only: false }
+        );
+        assert_eq!(
+            route_h2_parts(&Method::HEAD, "/robots.txt", None, None),
+            FallbackRoute::Robots { head_only: true }
+        );
+        assert_eq!(
+            route_h2_parts(&Method::POST, "/", None, None),
+            FallbackRoute::MethodNotAllowed
+        );
+        let token = BASE64_STANDARD.encode("admin:secret");
+        assert_eq!(
+            route_h2_parts(
+                &Method::GET,
+                "/api/status",
+                Some(&format!("Basic {token}")),
+                Some("secret"),
+            ),
+            FallbackRoute::ApiStatus { head_only: false }
+        );
+    }
+
+    #[tokio::test]
+    async fn serves_the_fallback_page_over_http2() {
+        let page = FallbackPage {
+            body: Arc::from(&b"fallback page"[..]),
+            dashboard_password: None,
+            request_timeout: Duration::from_secs(1),
+            max_request_size: DEFAULT_MAX_REQUEST_SIZE,
+        };
+        let (server, client) = tokio::io::duplex(16 * 1024);
+        page.serve_h2(server);
+
+        let (mut sender, connection) = h2::client::handshake(client).await.unwrap();
+        let connection = tokio::spawn(connection);
+        let request = http::Request::builder()
+            .method(Method::GET)
+            .uri("https://example.com/")
+            .body(())
+            .unwrap();
+        let (response, _) = sender.send_request(request, true).unwrap();
+        let response = response.await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let data = std::future::poll_fn(|cx| body.poll_data(cx))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(&data[..], b"fallback page");
+        connection.abort();
     }
 
     #[test]

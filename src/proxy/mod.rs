@@ -13,7 +13,8 @@ use crate::{
     error::Error,
     protocol::{
         mux::acceptor::MuxAcceptor,
-        tls::acceptor::TrojanTlsAcceptor,
+        singbox_mux::SingBoxMuxAcceptor,
+        tls::acceptor::{AlpnFallbackAcceptor, TrojanTlsAcceptor},
         trojan::acceptor::TrojanAcceptor,
         vless::acceptor::VlessAcceptor,
         websocket::acceptor::WebSocketAcceptor,
@@ -58,8 +59,11 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
     let config: ServerConfig = toml::from_str(&config_string)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
 
-    let tls_acceptor = TrojanTlsAcceptor::new(&config.tls).await?;
     let fallback_config = config.fallback.as_ref();
+    let tls_acceptor = AlpnFallbackAcceptor::new(
+        fallback_config,
+        TrojanTlsAcceptor::new(&config.tls, fallback_config.is_some()).await?,
+    )?;
 
     macro_rules! start_proxy {
         ($acceptor:expr, $config:expr) => {
@@ -98,8 +102,13 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             })?;
             let ws_acceptor =
                 WebSocketAcceptor::new_strict(&websocket, fallback_config, tls_acceptor)?;
+            let sing_box_mux_enabled = vless.sing_box_mux_enabled();
             let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
-            run_proxy(vless_acceptor).await?;
+            if sing_box_mux_enabled {
+                run_proxy(SingBoxMuxAcceptor::new(vless_acceptor)).await?;
+            } else {
+                run_proxy(vless_acceptor).await?;
+            }
         }
         (Some(_), Some(_)) => {
             return Err(Error::new("configure either [trojan] or [vless], not both").into());

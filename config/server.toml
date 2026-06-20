@@ -8,6 +8,8 @@ password = "password"
 # [vless]
 # users = ["d342d11e-d424-4583-b36e-524ab1f0afa4"]
 # handshake_timeout_secs = 10
+# [vless.multiplex]
+# enabled = true # sing-box multiplex, default h2mux only
 
 [tls]
 addr = "0.0.0.0:443"
@@ -16,7 +18,7 @@ cert = "cert.pem"
 key = "key.pem"
 # handshake_timeout_secs = 10
 
-# optional: serve /, /index.html and /robots.txt for ordinary HTTPS requests
+# optional: serve fallback routes over HTTP/1.1 and HTTP/2 for ordinary HTTPS requests
 [fallback]
 page = "config/camouflage.html"
 # optional: enables /dashboard and /api/status with HTTP Basic Auth user "admin"

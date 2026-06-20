@@ -1,4 +1,5 @@
 use crate::protocol::{
+    fallback::{FallbackConfig, FallbackPage},
     tls::{default_handshake_timeout_secs, new_error, validate_sni},
     AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyTcpStream,
 };
@@ -12,6 +13,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
@@ -35,6 +37,57 @@ pub struct TrojanTlsAcceptor {
 
 impl ProxyTcpStream for TlsStream<TcpStream> {}
 
+pub trait NegotiatedAlpn {
+    fn negotiated_alpn(&self) -> Option<&[u8]>;
+}
+
+impl NegotiatedAlpn for TlsStream<TcpStream> {
+    fn negotiated_alpn(&self) -> Option<&[u8]> {
+        self.get_ref().1.alpn_protocol()
+    }
+}
+
+pub struct AlpnFallbackAcceptor<T: ProxyAcceptor> {
+    fallback: Option<FallbackPage>,
+    inner: T,
+}
+
+impl<T: ProxyAcceptor> AlpnFallbackAcceptor<T> {
+    pub fn new(fallback_config: Option<&FallbackConfig>, inner: T) -> io::Result<Self> {
+        Ok(Self {
+            fallback: FallbackPage::new(fallback_config)?,
+            inner,
+        })
+    }
+}
+
+#[async_trait]
+impl<T> ProxyAcceptor for AlpnFallbackAcceptor<T>
+where
+    T: ProxyAcceptor,
+    T::TS: NegotiatedAlpn,
+{
+    type TS = T::TS;
+    type US = T::US;
+
+    async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
+        loop {
+            match self.inner.accept().await? {
+                AcceptResult::Tcp((mut stream, _addr))
+                    if stream.negotiated_alpn() == Some(b"h2") =>
+                {
+                    if let Some(fallback) = &self.fallback {
+                        fallback.serve_h2(stream);
+                    } else {
+                        let _ = stream.shutdown().await;
+                    }
+                }
+                result => return Ok(result),
+            }
+        }
+    }
+}
+
 #[async_trait]
 impl ProxyAcceptor for TrojanTlsAcceptor {
     type TS = TlsStream<TcpStream>;
@@ -52,7 +105,10 @@ impl ProxyAcceptor for TrojanTlsAcceptor {
 }
 
 impl TrojanTlsAcceptor {
-    pub async fn new(config: &TrojanTlsAcceptorConfig) -> io::Result<Self> {
+    pub async fn new(
+        config: &TrojanTlsAcceptorConfig,
+        enable_http2_fallback: bool,
+    ) -> io::Result<Self> {
         config.validate()?;
         let tcp_listener = TcpListener::bind(config.addr.to_owned()).await?;
         log::debug!("tls listen addr = {}", config.addr);
@@ -80,7 +136,11 @@ impl TrojanTlsAcceptor {
             .with_no_client_auth()
             .with_cert_resolver(std::sync::Arc::new(resolver));
 
-        server_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        server_config.alpn_protocols = if enable_http2_fallback {
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()]
+        } else {
+            vec![b"http/1.1".to_vec()]
+        };
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
         Ok(Self {
