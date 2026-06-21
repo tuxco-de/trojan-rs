@@ -96,6 +96,9 @@ impl ProxyAcceptor for TrojanTlsAcceptor {
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         let (stream, addr) = self.tcp_listener.accept().await?;
         log::info!("tcp connection from {}", addr);
+        if let Err(e) = stream.set_nodelay(true) {
+            log::debug!("failed to enable TCP_NODELAY for inbound {}: {}", addr, e);
+        }
         let stream = timeout(self.handshake_timeout, self.tls_acceptor.accept(stream))
             .await
             .map_err(|_| new_error("TLS handshake timed out"))?

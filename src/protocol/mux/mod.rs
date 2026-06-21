@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use bytes::{Buf, BufMut, Bytes};
+use bytes::{Buf, Bytes};
 use futures_core::{ready, Future};
 use futures_util::FutureExt;
 use tokio::{
@@ -106,23 +106,21 @@ impl MuxFrame {
             MuxFrame::Nop(f) => (f.stream_id, CMD_NOP),
             MuxFrame::Push(f) => (f.stream_id, CMD_PUSH),
         };
-        let mut buf = [0u8; HEADER_LEN];
-        let mut cursor = &mut buf[..];
         let data_length = if let MuxFrame::Push(f) = self {
             f.data.len()
         } else {
             0
         };
         assert!(data_length <= MAX_DATA_LEN);
-        cursor.put_u8(SMUX_VERSION);
-        cursor.put_u8(command);
-        cursor.put_u16_le(data_length as u16);
-        cursor.put_u32_le(stream_id);
-        writer.write_all(&buf).await?;
+        let mut buf = Vec::with_capacity(HEADER_LEN + data_length);
+        buf.push(SMUX_VERSION);
+        buf.push(command);
+        buf.extend_from_slice(&(data_length as u16).to_le_bytes());
+        buf.extend_from_slice(&stream_id.to_le_bytes());
         if let MuxFrame::Push(f) = self {
-            writer.write_all(&f.data).await?;
+            buf.extend_from_slice(&f.data);
         }
-        writer.flush().await?;
+        writer.write_all(&buf).await?;
         Ok(())
     }
 
@@ -282,7 +280,7 @@ impl AsyncWrite for MuxStream {
             }
 
             // self.write_buffer == None, first polling
-            let data = Bytes::copy_from_slice(buf);
+            let data = Bytes::from(buf.to_vec());
             self.write_buffer = Some(data);
         }
     }

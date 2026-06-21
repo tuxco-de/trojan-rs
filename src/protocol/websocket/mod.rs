@@ -177,7 +177,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
             return Poll::Ready(Ok(0));
         }
         ready!(Pin::new(&mut self.inner).poll_ready(cx)).map_err(new_error)?;
-        let message = Message::Binary(Bytes::copy_from_slice(buf));
+        let message = Message::Binary(Bytes::from(buf.to_vec()));
         Pin::new(&mut self.inner)
             .start_send(message)
             .map_err(new_error)?;

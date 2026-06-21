@@ -9,7 +9,7 @@ use crate::protocol::ProxyTcpStream;
 use super::metrics::{global_metrics, ClientMetrics};
 
 const METRICS_FLUSH_BYTES: u64 = 64 * 1024;
-const METRICS_TIME_CHECK_BYTES: u64 = 4 * 1024;
+const METRICS_TIME_CHECK_BYTES: u64 = 32 * 1024;
 const METRICS_FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 enum TrafficDirection {

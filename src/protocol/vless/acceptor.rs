@@ -21,9 +21,13 @@ pub struct VlessAcceptorConfig {
     handshake_timeout_secs: u64,
 }
 
+fn default_mux_enabled() -> bool {
+    true
+}
+
 #[derive(Deserialize)]
 pub struct VlessMultiplexConfig {
-    #[serde(default)]
+    #[serde(default = "default_mux_enabled")]
     enabled: bool,
 }
 
@@ -92,7 +96,7 @@ impl VlessAcceptorConfig {
     pub fn sing_box_mux_enabled(&self) -> bool {
         self.multiplex
             .as_ref()
-            .is_some_and(|multiplex| multiplex.enabled)
+            .map_or(true, |multiplex| multiplex.enabled)
     }
 }
 

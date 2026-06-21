@@ -142,14 +142,14 @@ async fn write_h2_body(
     reader: &mut ReadHalf<DuplexStream>,
     mut send: SendStream<Bytes>,
 ) -> io::Result<()> {
-    let mut buffer = [0; 16 * 1024];
+    let mut buffer = vec![0; 16 * 1024];
     loop {
         let length = reader.read(&mut buffer).await?;
         if length == 0 {
             send.send_data(Bytes::new(), true).map_err(h2_error)?;
             return Ok(());
         }
-        let mut data = Bytes::copy_from_slice(&buffer[..length]);
+        let mut data = Bytes::from(buffer[..length].to_vec());
         while !data.is_empty() {
             send.reserve_capacity(data.len());
             let capacity = std::future::poll_fn(|cx| send.poll_capacity(cx))

@@ -15,7 +15,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use super::meter::{MeteredStream, TrafficMeter};
 use super::metrics::{global_metrics, ClientMetrics};
 
-const RELAY_BUFFER_SIZE: usize = 0x4000;
+const RELAY_BUFFER_SIZE: usize = 0x10000;
 
 async fn copy_udp<R: UdpRead, W: UdpWrite>(
     r: &mut R,
