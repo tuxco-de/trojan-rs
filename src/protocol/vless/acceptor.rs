@@ -14,6 +14,7 @@ fn default_handshake_timeout_secs() -> u64 {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VlessAcceptorConfig {
     users: Vec<String>,
     multiplex: Option<VlessMultiplexConfig>,
@@ -26,6 +27,7 @@ fn default_mux_enabled() -> bool {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VlessMultiplexConfig {
     #[serde(default = "default_mux_enabled")]
     enabled: bool,
@@ -96,7 +98,7 @@ impl VlessAcceptorConfig {
     pub fn sing_box_mux_enabled(&self) -> bool {
         self.multiplex
             .as_ref()
-            .map_or(true, |multiplex| multiplex.enabled)
+            .is_some_and(|multiplex| multiplex.enabled)
     }
 }
 
@@ -106,8 +108,7 @@ mod tests {
     use crate::protocol::vless::VlessUdpStream;
     use crate::protocol::websocket::acceptor::{WebSocketAcceptor, WebSocketAcceptorConfig};
     use crate::protocol::{
-        AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyUdpStream,
-        UdpRead, UdpWrite,
+        AcceptResult, Address, DummyUdpStream, ProxyAcceptor, ProxyUdpStream, UdpRead, UdpWrite,
     };
     use async_trait::async_trait;
     use bytes::Bytes;
@@ -119,8 +120,6 @@ mod tests {
     };
     use tokio_tungstenite::{client_async, tungstenite::Message};
     use uuid::Uuid;
-
-
 
     struct SingleStreamAcceptor {
         stream: Arc<Mutex<Option<DuplexStream>>>,
@@ -273,5 +272,62 @@ mod tests {
         assert_eq!(&reply, b"\0\x05reply");
 
         let _ = VlessUdpStream::reunite(reader, writer).close().await;
+    }
+
+    #[tokio::test]
+    async fn accepts_zero_length_udp_packets() {
+        let (server, mut client) = tokio::io::duplex(4096);
+        let acceptor = acceptor(server);
+        let client_task = async move {
+            let mut bytes = request(2, 53, "dns.example");
+            bytes.extend_from_slice(&[0, 0]);
+            client.write_all(&bytes).await.unwrap();
+            let mut response = [0u8; 2];
+            client.read_exact(&mut response).await.unwrap();
+            response
+        };
+
+        let (accepted, response) = tokio::join!(acceptor.accept(), client_task);
+        assert_eq!(response, [0, 0]);
+        let udp = match accepted.unwrap() {
+            AcceptResult::Udp(stream) => stream,
+            AcceptResult::Tcp(_) => panic!("expected UDP stream"),
+        };
+        let (mut reader, writer) = udp.split();
+        let mut packet = [0u8; 32];
+        let (length, address) = reader.read_from(&mut packet).await.unwrap();
+        assert_eq!(length, 0);
+        assert_eq!(
+            address,
+            Address::DomainNameAddress("dns.example".into(), 53)
+        );
+
+        let _ = VlessUdpStream::reunite(reader, writer).close().await;
+    }
+
+    #[test]
+    fn multiplex_requires_explicit_section() {
+        let config: VlessAcceptorConfig =
+            toml::from_str("users = ['d342d11e-d424-4583-b36e-524ab1f0afa4']").unwrap();
+        assert!(!config.sing_box_mux_enabled());
+
+        let config: VlessAcceptorConfig =
+            toml::from_str("users = ['d342d11e-d424-4583-b36e-524ab1f0afa4']\n[multiplex]\n")
+                .unwrap();
+        assert!(config.sing_box_mux_enabled());
+
+        let config: VlessAcceptorConfig = toml::from_str(
+            "users = ['d342d11e-d424-4583-b36e-524ab1f0afa4']\n[multiplex]\nenabled = false\n",
+        )
+        .unwrap();
+        assert!(!config.sing_box_mux_enabled());
+    }
+
+    #[test]
+    fn rejects_unknown_vless_config_fields() {
+        let result = toml::from_str::<VlessAcceptorConfig>(
+            "users = ['d342d11e-d424-4583-b36e-524ab1f0afa4']\nunknown = true\n",
+        );
+        assert!(matches!(result, Err(error) if error.to_string().contains("unknown field")));
     }
 }

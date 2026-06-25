@@ -6,7 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use h2::{RecvStream, SendStream};
 use http::{Method, Response, StatusCode};
 use tokio::{
@@ -15,6 +15,7 @@ use tokio::{
         WriteHalf,
     },
     sync::{mpsc, Mutex},
+    time::{timeout, Duration},
 };
 
 use crate::protocol::{
@@ -26,6 +27,8 @@ const SING_BOX_MUX_PORT: u16 = 444;
 const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 const FLAG_UDP: u16 = 1;
 const FLAG_PACKET_ADDR: u16 = 2;
+const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+const H2_PREFACE_BYTE_TIMEOUT: Duration = Duration::from_secs(1);
 
 type MuxAcceptResult<T> = AcceptResult<
     SingBoxTcpStream<<T as ProxyAcceptor>::TS>,
@@ -59,12 +62,19 @@ impl<T: ProxyAcceptor> ProxyAcceptor for SingBoxMuxAcceptor<T> {
             tokio::select! {
                 result = self.inner.accept() => match result? {
                     AcceptResult::Tcp((stream, address)) if is_sing_box_mux_destination(&address) => {
-                        let sender = self.sender.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) = serve_h2mux(stream, sender).await {
-                                log::debug!("sing-box mux session ended: {}", error);
+                        match probe_h2_preface(stream).await? {
+                            H2ProbeResult::Mux(stream) => {
+                                let sender = self.sender.clone();
+                                tokio::spawn(async move {
+                                    if let Err(error) = serve_h2mux::<T::TS, _, T::US>(stream, sender).await {
+                                        log::debug!("sing-box mux session ended: {}", error);
+                                    }
+                                });
                             }
-                        });
+                            H2ProbeResult::Direct(stream) => {
+                                return Ok(AcceptResult::Tcp((SingBoxTcpStream::DirectWithPrefix(stream), address)));
+                            }
+                        }
                     }
                     AcceptResult::Tcp((stream, address)) => {
                         return Ok(AcceptResult::Tcp((SingBoxTcpStream::Direct(stream), address)));
@@ -83,9 +93,95 @@ fn is_sing_box_mux_destination(address: &Address) -> bool {
     matches!(address, Address::DomainNameAddress(host, port) if *port == SING_BOX_MUX_PORT && host.eq_ignore_ascii_case(SING_BOX_MUX_HOST))
 }
 
-async fn serve_h2mux<S: ProxyTcpStream + 'static, U: ProxyUdpStream + 'static>(
+enum H2ProbeResult<S> {
+    Mux(PrefixedTcpStream<S>),
+    Direct(PrefixedTcpStream<S>),
+}
+
+async fn probe_h2_preface<S: ProxyTcpStream>(mut stream: S) -> io::Result<H2ProbeResult<S>> {
+    let mut prefix = Vec::with_capacity(H2_PREFACE.len());
+    for expected in H2_PREFACE {
+        let mut byte = [0u8; 1];
+        let read = match timeout(H2_PREFACE_BYTE_TIMEOUT, stream.read(&mut byte)).await {
+            Ok(read) => read?,
+            Err(_) => {
+                return Ok(H2ProbeResult::Direct(PrefixedTcpStream::new(
+                    prefix, stream,
+                )))
+            }
+        };
+        if read == 0 {
+            return Ok(H2ProbeResult::Direct(PrefixedTcpStream::new(
+                prefix, stream,
+            )));
+        }
+        prefix.push(byte[0]);
+        if byte[0] != *expected {
+            return Ok(H2ProbeResult::Direct(PrefixedTcpStream::new(
+                prefix, stream,
+            )));
+        }
+    }
+    Ok(H2ProbeResult::Mux(PrefixedTcpStream::new(prefix, stream)))
+}
+
+pub struct PrefixedTcpStream<S> {
+    prefix: Bytes,
+    inner: S,
+}
+
+impl<S> PrefixedTcpStream<S> {
+    fn new(prefix: Vec<u8>, inner: S) -> Self {
+        Self {
+            prefix: Bytes::from(prefix),
+            inner,
+        }
+    }
+}
+
+impl<S: ProxyTcpStream> ProxyTcpStream for PrefixedTcpStream<S> {}
+
+impl<S: AsyncRead + Unpin> AsyncRead for PrefixedTcpStream<S> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if !self.prefix.is_empty() {
+            let length = self.prefix.len().min(buffer.remaining());
+            buffer.put_slice(&self.prefix[..length]);
+            self.prefix.advance(length);
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buffer)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for PrefixedTcpStream<S> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+async fn serve_h2mux<
+    B: ProxyTcpStream + 'static,
+    S: ProxyTcpStream + 'static,
+    U: ProxyUdpStream + 'static,
+>(
     stream: S,
-    sender: mpsc::Sender<AcceptResult<SingBoxTcpStream<S>, SingBoxUdpStream<U>>>,
+    sender: mpsc::Sender<AcceptResult<SingBoxTcpStream<B>, SingBoxUdpStream<U>>>,
 ) -> io::Result<()> {
     let mut connection = h2::server::handshake(stream).await.map_err(h2_error)?;
 
@@ -113,7 +209,7 @@ async fn serve_h2mux<S: ProxyTcpStream + 'static, U: ProxyUdpStream + 'static>(
 
         let sender = sender.clone();
         tokio::spawn(async move {
-            if let Err(error) = accept_h2mux_stream(relay, sender).await {
+            if let Err(error) = accept_h2mux_stream::<B, U>(relay, sender).await {
                 log::debug!("sing-box mux stream ended: {}", error);
             }
         });
@@ -200,6 +296,7 @@ fn h2_error(error: h2::Error) -> io::Error {
 
 pub enum SingBoxTcpStream<S> {
     Direct(S),
+    DirectWithPrefix(PrefixedTcpStream<S>),
     Multiplex(SingBoxMuxTcpStream),
 }
 
@@ -213,6 +310,7 @@ impl<S: AsyncRead + Unpin> AsyncRead for SingBoxTcpStream<S> {
     ) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_read(cx, buffer),
+            Self::DirectWithPrefix(stream) => Pin::new(stream).poll_read(cx, buffer),
             Self::Multiplex(stream) => Pin::new(stream).poll_read(cx, buffer),
         }
     }
@@ -226,6 +324,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SingBoxTcpStream<S> {
     ) -> Poll<io::Result<usize>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_write(cx, buffer),
+            Self::DirectWithPrefix(stream) => Pin::new(stream).poll_write(cx, buffer),
             Self::Multiplex(stream) => Pin::new(stream).poll_write(cx, buffer),
         }
     }
@@ -233,6 +332,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SingBoxTcpStream<S> {
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
+            Self::DirectWithPrefix(stream) => Pin::new(stream).poll_flush(cx),
             Self::Multiplex(stream) => Pin::new(stream).poll_flush(cx),
         }
     }
@@ -240,6 +340,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for SingBoxTcpStream<S> {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
         match &mut *self {
             Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::DirectWithPrefix(stream) => Pin::new(stream).poll_shutdown(cx),
             Self::Multiplex(stream) => Pin::new(stream).poll_shutdown(cx),
         }
     }
@@ -505,12 +606,35 @@ async fn write_socks_address<W: AsyncWrite + Unpin>(
 
 #[cfg(test)]
 mod tests {
+    use async_trait::async_trait;
     use bytes::Bytes;
-    use tokio::io::AsyncWriteExt;
-    use tokio::sync::mpsc;
+    use std::{io, sync::Arc};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::sync::{mpsc, Mutex};
 
-    use super::{is_sing_box_mux_destination, serve_h2mux, SingBoxTcpStream};
-    use crate::protocol::{Address, DummyUdpStream};
+    use super::{is_sing_box_mux_destination, serve_h2mux, SingBoxMuxAcceptor, SingBoxTcpStream};
+    use crate::protocol::{AcceptResult, Address, DummyUdpStream, ProxyAcceptor};
+
+    struct SingleStreamAcceptor {
+        stream: Arc<Mutex<Option<DuplexStream>>>,
+        address: Address,
+    }
+
+    #[async_trait]
+    impl ProxyAcceptor for SingleStreamAcceptor {
+        type TS = DuplexStream;
+        type US = DummyUdpStream;
+
+        async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
+            let stream = self
+                .stream
+                .lock()
+                .await
+                .take()
+                .ok_or(io::ErrorKind::ConnectionAborted)?;
+            Ok(AcceptResult::Tcp((stream, self.address.clone())))
+        }
+    }
 
     #[test]
     fn recognizes_the_sing_box_mux_destination() {
@@ -528,7 +652,9 @@ mod tests {
     async fn accepts_a_sing_box_h2mux_tcp_stream() {
         let (server_io, client_io) = tokio::io::duplex(64 * 1024);
         let (sender, mut receiver) = mpsc::channel(1);
-        let server = tokio::spawn(serve_h2mux::<_, DummyUdpStream>(server_io, sender));
+        let server = tokio::spawn(serve_h2mux::<DuplexStream, _, DummyUdpStream>(
+            server_io, sender,
+        ));
 
         let (mut send_request, connection) = h2::client::handshake(client_io).await.unwrap();
         let client = tokio::spawn(connection);
@@ -567,5 +693,28 @@ mod tests {
 
         client.abort();
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn does_not_hijack_non_h2_traffic_to_mux_destination() {
+        let (server, mut client) = tokio::io::duplex(4096);
+        let acceptor = SingBoxMuxAcceptor::new(SingleStreamAcceptor {
+            stream: Arc::new(Mutex::new(Some(server))),
+            address: Address::DomainNameAddress("sp.mux.sing-box.arpa".into(), 444),
+        });
+        let client_task = async move {
+            client.write_all(b"GET / HTTP/1.1\r\n").await.unwrap();
+            client
+        };
+
+        let (accepted, _) = tokio::join!(acceptor.accept(), client_task);
+        let (mut stream, address) = accepted.unwrap().unwrap_tcp_with_addr();
+        assert_eq!(
+            address,
+            Address::DomainNameAddress("sp.mux.sing-box.arpa".into(), 444)
+        );
+        let mut payload = [0u8; 16];
+        stream.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"GET / HTTP/1.1\r\n");
     }
 }

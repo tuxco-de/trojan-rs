@@ -40,7 +40,10 @@ impl RequestHeader {
         if addons_len != 0 {
             let mut addons = vec![0u8; addons_len];
             stream.read_exact(&mut addons).await?;
-            return Err(new_error("header addons and Vision flow are not supported"));
+            log::debug!(
+                "ignoring unsupported VLESS request addons of {} bytes",
+                addons_len
+            );
         }
 
         let command = stream.read_u8().await?;
@@ -97,10 +100,7 @@ where
             let mut domain = vec![0u8; length];
             stream.read_exact(&mut domain).await?;
             let domain = String::from_utf8(domain).map_err(|_| new_error("invalid domain name"))?;
-            if !domain
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_'))
-            {
+            if !is_compatible_domain_name(&domain) {
                 return Err(new_error("invalid domain name"));
             }
             Ok(Address::DomainNameAddress(domain, port))
@@ -120,6 +120,28 @@ where
     }
 }
 
+fn is_compatible_domain_name(domain: &str) -> bool {
+    if domain.is_empty() || domain.len() > 253 {
+        return false;
+    }
+    for label in domain.split('.') {
+        if label.is_empty() || label.len() > 63 {
+            return false;
+        }
+        let bytes = label.as_bytes();
+        if bytes.first() == Some(&b'-') || bytes.last() == Some(&b'-') {
+            return false;
+        }
+        if !bytes
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_')
+        {
+            return false;
+        }
+    }
+    true
+}
+
 pub struct VlessUdpReader<T> {
     inner: T,
     address: Address,
@@ -129,9 +151,6 @@ pub struct VlessUdpReader<T> {
 impl<T: AsyncRead + Unpin + Send + Sync> UdpRead for VlessUdpReader<T> {
     async fn read_from(&mut self, buf: &mut [u8]) -> io::Result<(usize, Address)> {
         let payload_len = self.inner.read_u16().await? as usize;
-        if payload_len == 0 {
-            return Err(new_error("empty UDP packet"));
-        }
         if payload_len > buf.len() {
             return Err(new_error(format!(
                 "UDP packet of {} bytes exceeds receive buffer",
@@ -197,7 +216,7 @@ impl<T: ProxyTcpStream> ProxyUdpStream for VlessUdpStream<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{contains_user, read_address, RequestHeader};
+    use super::{contains_user, is_compatible_domain_name, read_address, RequestHeader};
     use crate::protocol::Address;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
     use uuid::Uuid;
@@ -208,6 +227,27 @@ mod tests {
         let mut request = vec![0];
         request.extend_from_slice(user.as_bytes());
         request.extend_from_slice(&[0, 1, 0x01, 0xbb, 2, 11]);
+        request.extend_from_slice(b"example.com");
+
+        let mut input = request.as_slice();
+        let header = RequestHeader::read_from(&mut input, &[*user.as_bytes()])
+            .await
+            .unwrap();
+        match header {
+            RequestHeader::Tcp(Address::DomainNameAddress(domain, port)) => {
+                assert_eq!(domain, "example.com");
+                assert_eq!(port, 443);
+            }
+            _ => panic!("unexpected VLESS request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn tolerates_unknown_request_addons() {
+        let user = Uuid::parse_str("d342d11e-d424-4583-b36e-524ab1f0afa4").unwrap();
+        let mut request = vec![0];
+        request.extend_from_slice(user.as_bytes());
+        request.extend_from_slice(&[3, 0xaa, 0xbb, 0xcc, 1, 0x01, 0xbb, 2, 11]);
         request.extend_from_slice(b"example.com");
 
         let mut input = request.as_slice();
@@ -239,5 +279,15 @@ mod tests {
         let second = *Uuid::max().as_bytes();
         assert!(contains_user(&[first, second], &second));
         assert!(!contains_user(&[first], &second));
+    }
+
+    #[test]
+    fn validates_domain_name_boundaries() {
+        assert!(is_compatible_domain_name("dns.example"));
+        assert!(is_compatible_domain_name("_service.example"));
+        assert!(!is_compatible_domain_name("-bad.example"));
+        assert!(!is_compatible_domain_name("bad-.example"));
+        assert!(!is_compatible_domain_name("bad..example"));
+        assert!(!is_compatible_domain_name("bad/example"));
     }
 }

@@ -26,15 +26,11 @@ async fn copy_udp<R: UdpRead, W: UdpWrite>(
     loop {
         let (len, addr) = r.read_from(&mut buf).await?;
         log::debug!("udp packet addr={} len={}", addr, len);
-        if len == 0 {
-            break;
-        }
         w.write_to(&buf[..len], &addr).await?;
         if let Some(meter) = meter.as_deref_mut() {
             meter.record(len as u64);
         }
     }
-    Ok(())
 }
 
 async fn relay_udp_metered<T: ProxyUdpStream, U: ProxyUdpStream>(
