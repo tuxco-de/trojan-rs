@@ -27,7 +27,7 @@ Trojan-rs 是一个纯服务端的轻量代理实现，使用 Rust、Tokio 和 R
 
 - 本项目**仅作为服务端运行**，不提供本地客户端（如 SOCKS5）功能。
 - VLESS 服务端必须启用 WebSocket，并且不能与 `[trojan]` 同时配置。
-- Mux 只支持 Trojan；VLESS 配置存在 `[mux]` 时会拒绝启动。
+- Trojan-Go Mux 只支持 Trojan；VLESS 会自适应原生 Mux.Cool 与 sing-box h2mux。
 - 没有透明代理、规则路由、管理 API、流量统计或数据库。
 - 没有浏览器 ClientHello 模拟、ECH、HTTP/3 或 QUIC。
 
@@ -133,7 +133,7 @@ Trojan 首部使用 `hex(SHA-224(password))`、CRLF、命令、目标地址和 C
 
 VLESS 必须运行在 strict WebSocket 入口之上。当前未实现 flow、XTLS Vision、REALITY。
 
-启用 `[vless.multiplex]` 后，服务端支持 sing-box 的 multiplex 默认 `h2mux` 协议。sing-box 客户端应使用 `multiplex.enabled = true`，并保持 `protocol` 为空或显式设为 `h2mux`；`smux`、`yamux`、padding 和 brutal 暂不支持。
+VLESS 会自动适配客户端 multiplex：原生 VLESS Mux.Cool（TCP/UDP）和 sing-box 默认 `h2mux` 都无需服务端额外配置。sing-box 客户端应使用 `multiplex.enabled = true`，并保持 `protocol` 为空或显式设为 `h2mux`；`smux`、`yamux`、padding 和 brutal 暂不支持。可通过 `[vless.multiplex] enabled = false` 禁用 sing-box h2mux 自动识别。
 
 ### Trojan-Go Mux
 

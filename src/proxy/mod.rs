@@ -1,7 +1,7 @@
 pub mod config;
-pub mod relay;
-pub mod metrics;
 pub mod meter;
+pub mod metrics;
+pub mod relay;
 
 use log::LevelFilter;
 use std::{
@@ -81,12 +81,10 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             if let Some(websocket) = config.websocket {
                 let ws_acceptor =
                     WebSocketAcceptor::new(&websocket, fallback_config, tls_acceptor)?;
-                let trojan_acceptor =
-                    TrojanAcceptor::new(&trojan, fallback_config, ws_acceptor)?;
+                let trojan_acceptor = TrojanAcceptor::new(&trojan, fallback_config, ws_acceptor)?;
                 start_proxy!(trojan_acceptor, config);
             } else {
-                let trojan_acceptor =
-                    TrojanAcceptor::new(&trojan, fallback_config, tls_acceptor)?;
+                let trojan_acceptor = TrojanAcceptor::new(&trojan, fallback_config, tls_acceptor)?;
                 start_proxy!(trojan_acceptor, config);
             }
         }
@@ -103,9 +101,14 @@ pub async fn launch_from_config_string(config_string: String) -> io::Result<()> 
             let ws_acceptor =
                 WebSocketAcceptor::new_strict(&websocket, fallback_config, tls_acceptor)?;
             let sing_box_mux_enabled = vless.sing_box_mux_enabled();
+            let sing_box_mux_h2_probe_timeout = vless.sing_box_mux_h2_probe_timeout()?;
             let vless_acceptor = VlessAcceptor::new(&vless, ws_acceptor)?;
             if sing_box_mux_enabled {
-                run_proxy(SingBoxMuxAcceptor::new(vless_acceptor)).await?;
+                run_proxy(SingBoxMuxAcceptor::new_with_probe_timeout(
+                    vless_acceptor,
+                    sing_box_mux_h2_probe_timeout,
+                ))
+                .await?;
             } else {
                 run_proxy(vless_acceptor).await?;
             }

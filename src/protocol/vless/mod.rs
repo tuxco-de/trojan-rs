@@ -1,12 +1,22 @@
 pub mod acceptor;
+mod mux_cool;
 
 use crate::{
     error::Error,
     protocol::{Address, ProxyTcpStream, ProxyUdpStream, UdpRead, UdpWrite},
 };
 use async_trait::async_trait;
-use std::io;
-use tokio::io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
+use mux_cool::{MuxCoolStream, MuxCoolUdpRead, MuxCoolUdpStream, MuxCoolUdpWrite};
+use std::{
+    io,
+    pin::Pin,
+    task::{Context, Poll},
+};
+use tokio::io::{
+    split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf, ReadHalf, WriteHalf,
+};
+
+pub use mux_cool::serve_mux_cool;
 
 const VERSION: u8 = 0;
 const COMMAND_TCP: u8 = 0x01;
@@ -20,6 +30,7 @@ fn new_error<T: ToString>(message: T) -> io::Error {
 enum RequestHeader {
     Tcp(Address),
     Udp(Address),
+    Mux,
 }
 
 impl RequestHeader {
@@ -48,7 +59,7 @@ impl RequestHeader {
 
         let command = stream.read_u8().await?;
         if command == COMMAND_MUX {
-            return Err(new_error("VLESS mux is not supported"));
+            return Ok(Self::Mux);
         }
         if command != COMMAND_TCP && command != COMMAND_UDP {
             return Err(new_error(format!("unsupported command {}", command)));
@@ -59,6 +70,53 @@ impl RequestHeader {
             COMMAND_TCP => Ok(Self::Tcp(address)),
             COMMAND_UDP => Ok(Self::Udp(address)),
             _ => unreachable!(),
+        }
+    }
+}
+
+pub enum VlessTcpStream<T: ProxyTcpStream> {
+    Direct(T),
+    MuxCool(MuxCoolStream),
+}
+
+impl<T: ProxyTcpStream> ProxyTcpStream for VlessTcpStream<T> {}
+
+impl<T: ProxyTcpStream> AsyncRead for VlessTcpStream<T> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Direct(stream) => Pin::new(stream).poll_read(cx, buf),
+            Self::MuxCool(stream) => Pin::new(stream).poll_read(cx, buf),
+        }
+    }
+}
+
+impl<T: ProxyTcpStream> AsyncWrite for VlessTcpStream<T> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        match &mut *self {
+            Self::Direct(stream) => Pin::new(stream).poll_write(cx, buf),
+            Self::MuxCool(stream) => Pin::new(stream).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Direct(stream) => Pin::new(stream).poll_flush(cx),
+            Self::MuxCool(stream) => Pin::new(stream).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        match &mut *self {
+            Self::Direct(stream) => Pin::new(stream).poll_shutdown(cx),
+            Self::MuxCool(stream) => Pin::new(stream).poll_shutdown(cx),
         }
     }
 }
@@ -177,13 +235,13 @@ impl<T: AsyncWrite + Unpin + Send + Sync> UdpWrite for VlessUdpWriter<T> {
     }
 }
 
-pub struct VlessUdpStream<T: ProxyTcpStream> {
+pub struct DirectVlessUdpStream<T: ProxyTcpStream> {
     reader: VlessUdpReader<ReadHalf<T>>,
     writer: VlessUdpWriter<WriteHalf<T>>,
 }
 
-impl<T: ProxyTcpStream> VlessUdpStream<T> {
-    pub(super) fn new(inner: T, address: Address) -> Self {
+impl<T: ProxyTcpStream> DirectVlessUdpStream<T> {
+    fn new(inner: T, address: Address) -> Self {
         let (reader, writer) = split(inner);
         Self {
             reader: VlessUdpReader {
@@ -196,7 +254,7 @@ impl<T: ProxyTcpStream> VlessUdpStream<T> {
 }
 
 #[async_trait]
-impl<T: ProxyTcpStream> ProxyUdpStream for VlessUdpStream<T> {
+impl<T: ProxyTcpStream> ProxyUdpStream for DirectVlessUdpStream<T> {
     type R = VlessUdpReader<ReadHalf<T>>;
     type W = VlessUdpWriter<WriteHalf<T>>;
 
@@ -211,6 +269,92 @@ impl<T: ProxyTcpStream> ProxyUdpStream for VlessUdpStream<T> {
     async fn close(self) -> io::Result<()> {
         let mut inner = self.reader.inner.unsplit(self.writer.inner);
         inner.shutdown().await
+    }
+}
+
+pub enum VlessUdpStream<T: ProxyTcpStream> {
+    Direct(DirectVlessUdpStream<T>),
+    MuxCool(MuxCoolUdpStream),
+}
+
+pub enum VlessUdpRead<T: ProxyTcpStream> {
+    Direct(VlessUdpReader<ReadHalf<T>>),
+    MuxCool(MuxCoolUdpRead),
+}
+
+pub enum VlessUdpWrite<T: ProxyTcpStream> {
+    Direct(VlessUdpWriter<WriteHalf<T>>),
+    MuxCool(MuxCoolUdpWrite),
+}
+
+impl<T: ProxyTcpStream> VlessUdpStream<T> {
+    pub(super) fn new(inner: T, address: Address) -> Self {
+        Self::Direct(DirectVlessUdpStream::new(inner, address))
+    }
+
+    pub(super) fn mux_cool(inner: MuxCoolUdpStream) -> Self {
+        Self::MuxCool(inner)
+    }
+}
+
+#[async_trait]
+impl<T: ProxyTcpStream> UdpRead for VlessUdpRead<T> {
+    async fn read_from(&mut self, buf: &mut [u8]) -> io::Result<(usize, Address)> {
+        match self {
+            Self::Direct(reader) => reader.read_from(buf).await,
+            Self::MuxCool(reader) => reader.read_from(buf).await,
+        }
+    }
+}
+
+#[async_trait]
+impl<T: ProxyTcpStream> UdpWrite for VlessUdpWrite<T> {
+    async fn write_to(&mut self, buf: &[u8], addr: &Address) -> io::Result<()> {
+        match self {
+            Self::Direct(writer) => writer.write_to(buf, addr).await,
+            Self::MuxCool(writer) => writer.write_to(buf, addr).await,
+        }
+    }
+}
+
+#[async_trait]
+impl<T: ProxyTcpStream> ProxyUdpStream for VlessUdpStream<T> {
+    type R = VlessUdpRead<T>;
+    type W = VlessUdpWrite<T>;
+
+    fn split(self) -> (Self::R, Self::W) {
+        match self {
+            Self::Direct(stream) => {
+                let (reader, writer) = stream.split();
+                (VlessUdpRead::Direct(reader), VlessUdpWrite::Direct(writer))
+            }
+            Self::MuxCool(stream) => {
+                let (reader, writer) = stream.split();
+                (
+                    VlessUdpRead::MuxCool(reader),
+                    VlessUdpWrite::MuxCool(writer),
+                )
+            }
+        }
+    }
+
+    fn reunite(reader: Self::R, writer: Self::W) -> Self {
+        match (reader, writer) {
+            (VlessUdpRead::Direct(reader), VlessUdpWrite::Direct(writer)) => {
+                Self::Direct(DirectVlessUdpStream::reunite(reader, writer))
+            }
+            (VlessUdpRead::MuxCool(reader), VlessUdpWrite::MuxCool(writer)) => {
+                Self::MuxCool(MuxCoolUdpStream::reunite(reader, writer))
+            }
+            _ => unreachable!("mismatched VLESS UDP stream halves"),
+        }
+    }
+
+    async fn close(self) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.close().await,
+            Self::MuxCool(stream) => stream.close().await,
+        }
     }
 }
 

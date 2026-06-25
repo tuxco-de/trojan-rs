@@ -28,7 +28,8 @@ const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 const FLAG_UDP: u16 = 1;
 const FLAG_PACKET_ADDR: u16 = 2;
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
-const H2_PREFACE_BYTE_TIMEOUT: Duration = Duration::from_secs(1);
+#[cfg(test)]
+const DEFAULT_H2_PREFACE_BYTE_TIMEOUT: Duration = Duration::from_secs(1);
 
 type MuxAcceptResult<T> = AcceptResult<
     SingBoxTcpStream<<T as ProxyAcceptor>::TS>,
@@ -39,15 +40,22 @@ pub struct SingBoxMuxAcceptor<T: ProxyAcceptor> {
     inner: T,
     receiver: Arc<Mutex<mpsc::Receiver<MuxAcceptResult<T>>>>,
     sender: mpsc::Sender<MuxAcceptResult<T>>,
+    h2_preface_byte_timeout: Duration,
 }
 
 impl<T: ProxyAcceptor> SingBoxMuxAcceptor<T> {
+    #[cfg(test)]
     pub fn new(inner: T) -> Self {
+        Self::new_with_probe_timeout(inner, DEFAULT_H2_PREFACE_BYTE_TIMEOUT)
+    }
+
+    pub fn new_with_probe_timeout(inner: T, h2_preface_byte_timeout: Duration) -> Self {
         let (sender, receiver) = mpsc::channel(128);
         Self {
             inner,
             receiver: Arc::new(Mutex::new(receiver)),
             sender,
+            h2_preface_byte_timeout,
         }
     }
 }
@@ -62,7 +70,7 @@ impl<T: ProxyAcceptor> ProxyAcceptor for SingBoxMuxAcceptor<T> {
             tokio::select! {
                 result = self.inner.accept() => match result? {
                     AcceptResult::Tcp((stream, address)) if is_sing_box_mux_destination(&address) => {
-                        match probe_h2_preface(stream).await? {
+                        match probe_h2_preface(stream, self.h2_preface_byte_timeout).await? {
                             H2ProbeResult::Mux(stream) => {
                                 let sender = self.sender.clone();
                                 tokio::spawn(async move {
@@ -98,11 +106,14 @@ enum H2ProbeResult<S> {
     Direct(PrefixedTcpStream<S>),
 }
 
-async fn probe_h2_preface<S: ProxyTcpStream>(mut stream: S) -> io::Result<H2ProbeResult<S>> {
+async fn probe_h2_preface<S: ProxyTcpStream>(
+    mut stream: S,
+    h2_preface_byte_timeout: Duration,
+) -> io::Result<H2ProbeResult<S>> {
     let mut prefix = Vec::with_capacity(H2_PREFACE.len());
     for expected in H2_PREFACE {
         let mut byte = [0u8; 1];
-        let read = match timeout(H2_PREFACE_BYTE_TIMEOUT, stream.read(&mut byte)).await {
+        let read = match timeout(h2_preface_byte_timeout, stream.read(&mut byte)).await {
             Ok(read) => read?,
             Err(_) => {
                 return Ok(H2ProbeResult::Direct(PrefixedTcpStream::new(

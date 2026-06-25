@@ -2,7 +2,10 @@ pub mod acceptor;
 
 use bytes::{Buf, Bytes};
 use serde::Deserialize;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::{
+    io::{AsyncRead, AsyncWrite},
+    time::{interval_at, Duration, Instant, Interval, MissedTickBehavior},
+};
 use tokio_tungstenite::{
     tungstenite::{protocol::WebSocketConfig, Error as WebSocketError, Message},
     WebSocketStream,
@@ -24,6 +27,7 @@ const DEFAULT_MAX_HANDSHAKE_SIZE: usize = 8 * 1024;
 const DEFAULT_BUFFER_SIZE: usize = 16 * 1024;
 const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_WRITE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
+const DEFAULT_MAX_EARLY_DATA: usize = 8 * 1024;
 
 pub(super) fn default_handshake_timeout_secs() -> u64 {
     DEFAULT_HANDSHAKE_TIMEOUT_SECS
@@ -31,6 +35,10 @@ pub(super) fn default_handshake_timeout_secs() -> u64 {
 
 pub(super) fn default_max_handshake_size() -> usize {
     DEFAULT_MAX_HANDSHAKE_SIZE
+}
+
+pub(super) fn default_max_early_data() -> usize {
+    DEFAULT_MAX_EARLY_DATA
 }
 
 fn default_buffer_size() -> usize {
@@ -57,6 +65,10 @@ pub(super) struct WebSocketOptions {
     pub max_frame_size: usize,
     #[serde(default = "default_max_write_buffer_size")]
     pub max_write_buffer_size: usize,
+    #[serde(default)]
+    pub max_write_frame_size: usize,
+    #[serde(default)]
+    pub keepalive_interval_secs: u64,
 }
 
 impl WebSocketOptions {
@@ -66,6 +78,7 @@ impl WebSocketOptions {
             || self.max_frame_size == 0
             || self.max_frame_size > self.max_message_size
             || self.max_write_buffer_size <= self.write_buffer_size
+            || self.max_write_frame_size > self.max_message_size
         {
             return Err(new_error("invalid websocket resource limits"));
         }
@@ -91,9 +104,18 @@ pub struct BinaryWsStream<T: AsyncRead + AsyncWrite + Send + Sync + Unpin> {
     read_buffer: Option<Bytes>,
     read_closed: bool,
     close_flushed: bool,
+    keepalive: Option<Interval>,
+    keepalive_state: KeepaliveState,
+    max_write_frame_size: usize,
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> ProxyTcpStream for BinaryWsStream<T> {}
+
+enum KeepaliveState {
+    Idle,
+    ReadyToSend,
+    Flushing,
+}
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncRead for BinaryWsStream<T> {
     fn poll_read(
@@ -102,6 +124,7 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncRead for BinaryWsStre
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         loop {
+            ready!(self.poll_keepalive(cx))?;
             if self.read_closed {
                 if self.close_flushed {
                     return Poll::Ready(Ok(()));
@@ -176,15 +199,22 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
         if buf.is_empty() {
             return Poll::Ready(Ok(0));
         }
+        ready!(self.poll_keepalive(cx))?;
         ready!(Pin::new(&mut self.inner).poll_ready(cx)).map_err(new_error)?;
-        let message = Message::Binary(Bytes::from(buf.to_vec()));
+        let length = if self.max_write_frame_size == 0 {
+            buf.len()
+        } else {
+            buf.len().min(self.max_write_frame_size)
+        };
+        let message = Message::Binary(Bytes::copy_from_slice(&buf[..length]));
         Pin::new(&mut self.inner)
             .start_send(message)
             .map_err(new_error)?;
-        Poll::Ready(Ok(buf.len()))
+        Poll::Ready(Ok(length))
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), io::Error>> {
+        ready!(self.poll_keepalive(cx))?;
         let inner = Pin::new(&mut self.inner);
         inner.poll_flush(cx).map_err(new_error)
     }
@@ -198,14 +228,67 @@ impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> AsyncWrite for BinaryWsStr
 }
 
 impl<T: AsyncRead + AsyncWrite + Unpin + Send + Sync> BinaryWsStream<T> {
+    #[cfg(test)]
     pub fn new(inner: WebSocketStream<T>) -> Self {
+        Self::new_with_options(inner, Bytes::new(), 0, 0)
+    }
+
+    pub fn new_with_options(
+        inner: WebSocketStream<T>,
+        early_data: Bytes,
+        keepalive_interval_secs: u64,
+        max_write_frame_size: usize,
+    ) -> Self {
+        let keepalive = if keepalive_interval_secs == 0 {
+            None
+        } else {
+            let mut interval = interval_at_next_tick(Duration::from_secs(keepalive_interval_secs));
+            interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            Some(interval)
+        };
         Self {
             inner,
-            read_buffer: None,
+            read_buffer: (!early_data.is_empty()).then_some(early_data),
             read_closed: false,
             close_flushed: false,
+            keepalive,
+            keepalive_state: KeepaliveState::Idle,
+            max_write_frame_size,
         }
     }
+
+    fn poll_keepalive(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        if self.keepalive.is_none() {
+            return Poll::Ready(Ok(()));
+        }
+        loop {
+            match self.keepalive_state {
+                KeepaliveState::Idle => {
+                    let keepalive = self.keepalive.as_mut().unwrap();
+                    if Pin::new(keepalive).poll_tick(cx).is_pending() {
+                        return Poll::Ready(Ok(()));
+                    }
+                    self.keepalive_state = KeepaliveState::ReadyToSend;
+                }
+                KeepaliveState::ReadyToSend => {
+                    ready!(Pin::new(&mut self.inner).poll_ready(cx)).map_err(new_error)?;
+                    Pin::new(&mut self.inner)
+                        .start_send(Message::Ping(Bytes::new()))
+                        .map_err(new_error)?;
+                    self.keepalive_state = KeepaliveState::Flushing;
+                }
+                KeepaliveState::Flushing => {
+                    ready!(Pin::new(&mut self.inner).poll_flush(cx)).map_err(new_error)?;
+                    self.keepalive_state = KeepaliveState::Idle;
+                    return Poll::Ready(Ok(()));
+                }
+            }
+        }
+    }
+}
+
+fn interval_at_next_tick(period: Duration) -> Interval {
+    interval_at(Instant::now() + period, period)
 }
 
 #[cfg(test)]
@@ -267,6 +350,45 @@ mod tests {
         };
 
         tokio::join!(server_task, client_task);
+    }
+
+    #[tokio::test]
+    async fn splits_writes_by_configured_frame_size() {
+        let (server, mut client) = websocket_pair().await;
+        let mut server = BinaryWsStream::new_with_options(server.inner, Bytes::new(), 0, 3);
+
+        server.write_all(b"abcdef").await.unwrap();
+        server.flush().await.unwrap();
+
+        assert!(matches!(
+            client.next().await,
+            Some(Ok(Message::Binary(payload))) if &payload[..] == b"abc"
+        ));
+        assert!(matches!(
+            client.next().await,
+            Some(Ok(Message::Binary(payload))) if &payload[..] == b"def"
+        ));
+    }
+
+    #[tokio::test]
+    async fn sends_keepalive_ping() {
+        let (server, mut client) = websocket_pair().await;
+        let mut server = BinaryWsStream::new_with_options(server.inner, Bytes::new(), 1, 0);
+        let mut one_byte = [0u8; 1];
+
+        let server_task = tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                server.read(&mut one_byte),
+            )
+            .await;
+        });
+        let message = tokio::time::timeout(std::time::Duration::from_secs(2), client.next())
+            .await
+            .unwrap();
+        server_task.abort();
+
+        assert!(matches!(message, Some(Ok(Message::Ping(_)))));
     }
 
     #[test]
