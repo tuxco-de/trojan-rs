@@ -81,6 +81,7 @@ impl<T: ProxyAcceptor> TrojanAcceptor<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::trojan::password_to_hash;
     use crate::protocol::{Address, DummyUdpStream, ProxyUdpStream, UdpRead};
     use async_trait::async_trait;
     use std::sync::Arc;
@@ -88,9 +89,6 @@ mod tests {
         io::{AsyncReadExt, AsyncWriteExt, DuplexStream},
         sync::Mutex,
     };
-    use crate::protocol::trojan::password_to_hash;
-
-
 
     struct SingleStreamAcceptor {
         stream: Arc<Mutex<Option<DuplexStream>>>,
@@ -151,8 +149,11 @@ mod tests {
 
         let (accepted, ()) = tokio::join!(acceptor.accept(), client_task);
         let (mut stream, address) = accepted.unwrap().unwrap_tcp_with_addr();
-        assert_eq!(address, Address::DomainNameAddress("example.com".into(), 443));
-        
+        assert_eq!(
+            address,
+            Address::DomainNameAddress("example.com".into(), 443)
+        );
+
         let mut payload = [0u8; 7];
         stream.read_exact(&mut payload).await.unwrap();
         assert_eq!(&payload, b"payload");
@@ -181,12 +182,15 @@ mod tests {
             AcceptResult::Udp(stream) => stream,
             AcceptResult::Tcp(_) => panic!("expected UDP stream"),
         };
-        
+
         // Test UDP stream relay parsing
         let (mut reader, mut _writer) = udp.split();
         let mut packet = [0u8; 32];
         let (length, address) = reader.read_from(&mut packet).await.unwrap();
         assert_eq!(&packet[..length], b"dns");
-        assert_eq!(address, Address::DomainNameAddress("dns.example".into(), 53));
+        assert_eq!(
+            address,
+            Address::DomainNameAddress("dns.example".into(), 53)
+        );
     }
 }

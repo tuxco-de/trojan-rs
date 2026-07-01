@@ -176,6 +176,8 @@ max_request_size = 8192
 # [websocket]
 # path = "/api/events"
 # handshake_timeout_secs = 10
+# keepalive_interval_secs = 30
+# max_write_frame_size = 16384
 
 # [mux]
 ```
@@ -199,6 +201,8 @@ handshake_timeout_secs = 10
 
 [websocket]
 path = "/api/events"
+keepalive_interval_secs = 30
+max_write_frame_size = 16384
 
 [fallback]
 page = "/var/www/camouflage.html"

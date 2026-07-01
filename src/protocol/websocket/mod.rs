@@ -28,6 +28,7 @@ const DEFAULT_BUFFER_SIZE: usize = 16 * 1024;
 const DEFAULT_MAX_MESSAGE_SIZE: usize = 1024 * 1024;
 const DEFAULT_MAX_WRITE_BUFFER_SIZE: usize = 2 * 1024 * 1024;
 const DEFAULT_MAX_EARLY_DATA: usize = 8 * 1024;
+const DEFAULT_KEEPALIVE_INTERVAL_SECS: u64 = 30;
 
 pub(super) fn default_handshake_timeout_secs() -> u64 {
     DEFAULT_HANDSHAKE_TIMEOUT_SECS
@@ -53,6 +54,10 @@ fn default_max_write_buffer_size() -> usize {
     DEFAULT_MAX_WRITE_BUFFER_SIZE
 }
 
+fn default_keepalive_interval_secs() -> u64 {
+    DEFAULT_KEEPALIVE_INTERVAL_SECS
+}
+
 #[derive(Clone, Copy, Debug, Deserialize)]
 pub(super) struct WebSocketOptions {
     #[serde(default = "default_buffer_size")]
@@ -67,7 +72,7 @@ pub(super) struct WebSocketOptions {
     pub max_write_buffer_size: usize,
     #[serde(default)]
     pub max_write_frame_size: usize,
-    #[serde(default)]
+    #[serde(default = "default_keepalive_interval_secs")]
     pub keepalive_interval_secs: u64,
 }
 
@@ -397,5 +402,6 @@ mod tests {
         options.validate().unwrap();
         assert_eq!(options.read_buffer_size, 16 * 1024);
         assert_eq!(options.max_message_size, 1024 * 1024);
+        assert_eq!(options.keepalive_interval_secs, 30);
     }
 }

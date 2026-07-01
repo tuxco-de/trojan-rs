@@ -9,8 +9,6 @@ pub(super) fn default_handshake_timeout_secs() -> u64 {
     DEFAULT_HANDSHAKE_TIMEOUT_SECS
 }
 
-
-
 fn new_error<T: ToString>(message: T) -> io::Error {
     Error::new(format!("tls: {}", message.to_string())).into()
 }
@@ -48,5 +46,4 @@ mod tests {
         assert!(validate_sni("bad_name.example.com").is_err());
         assert!(validate_sni("example.com.").is_err());
     }
-
 }

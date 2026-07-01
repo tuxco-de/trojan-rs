@@ -19,7 +19,6 @@ use std::{
     cmp::min,
     collections::HashMap,
     io::{self, Cursor},
-
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -155,7 +154,6 @@ impl MuxFrame {
         Ok(frame)
     }
 }
-
 
 type WriteFuture = Pin<Box<dyn Future<Output = Result<(), SendError<MuxFrame>>> + Send + Sync>>;
 

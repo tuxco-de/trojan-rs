@@ -8,7 +8,6 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-
 use crate::error::Error;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -69,7 +68,6 @@ impl Address {
     pub const ADDR_TYPE_IPV4: u8 = 1;
     pub const ADDR_TYPE_DOMAIN_NAME: u8 = 3;
     pub const ADDR_TYPE_IPV6: u8 = 4;
-
 
     #[inline]
     pub fn serialized_len(&self) -> usize {
@@ -154,7 +152,6 @@ impl Address {
             }
         }
     }
-
 
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         match self {

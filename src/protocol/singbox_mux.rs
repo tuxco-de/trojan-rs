@@ -40,6 +40,8 @@ pub struct SingBoxMuxAcceptor<T: ProxyAcceptor> {
     inner: T,
     receiver: Arc<Mutex<mpsc::Receiver<MuxAcceptResult<T>>>>,
     sender: mpsc::Sender<MuxAcceptResult<T>>,
+    accept_receiver: Arc<Mutex<mpsc::Receiver<io::Result<MuxAcceptResult<T>>>>>,
+    accept_sender: mpsc::Sender<io::Result<MuxAcceptResult<T>>>,
     h2_preface_byte_timeout: Duration,
 }
 
@@ -51,44 +53,70 @@ impl<T: ProxyAcceptor> SingBoxMuxAcceptor<T> {
 
     pub fn new_with_probe_timeout(inner: T, h2_preface_byte_timeout: Duration) -> Self {
         let (sender, receiver) = mpsc::channel(128);
+        let (accept_sender, accept_receiver) = mpsc::channel(1024);
         Self {
             inner,
             receiver: Arc::new(Mutex::new(receiver)),
             sender,
+            accept_receiver: Arc::new(Mutex::new(accept_receiver)),
+            accept_sender,
             h2_preface_byte_timeout,
         }
     }
 }
 
 #[async_trait]
-impl<T: ProxyAcceptor> ProxyAcceptor for SingBoxMuxAcceptor<T> {
+impl<T: ProxyAcceptor + 'static> ProxyAcceptor for SingBoxMuxAcceptor<T> {
     type TS = SingBoxTcpStream<T::TS>;
     type US = SingBoxUdpStream<T::US>;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         loop {
             tokio::select! {
-                result = self.inner.accept() => match result? {
-                    AcceptResult::Tcp((stream, address)) if is_sing_box_mux_destination(&address) => {
-                        match probe_h2_preface(stream, self.h2_preface_byte_timeout).await? {
-                            H2ProbeResult::Mux(stream) => {
-                                let sender = self.sender.clone();
-                                tokio::spawn(async move {
-                                    if let Err(error) = serve_h2mux::<T::TS, _, T::US>(stream, sender).await {
-                                        log::debug!("sing-box mux session ended: {}", error);
+                result = self.inner.accept() => match result {
+                    Ok(AcceptResult::Tcp((stream, address))) if is_sing_box_mux_destination(&address) => {
+                        let h2_preface_byte_timeout = self.h2_preface_byte_timeout;
+                        let sender = self.sender.clone();
+                        let accept_sender = self.accept_sender.clone();
+                        tokio::spawn(async move {
+                            let result = async {
+                                match probe_h2_preface(stream, h2_preface_byte_timeout).await? {
+                                    H2ProbeResult::Mux(stream) => {
+                                        tokio::spawn(async move {
+                                            if let Err(error) = serve_h2mux::<T::TS, _, T::US>(stream, sender).await {
+                                                log::debug!("sing-box mux session ended: {}", error);
+                                            }
+                                        });
+                                        Ok(None)
                                     }
-                                });
+                                    H2ProbeResult::Direct(stream) => {
+                                        Ok(Some(AcceptResult::Tcp((SingBoxTcpStream::DirectWithPrefix(stream), address))))
+                                    }
+                                }
+                            }.await;
+                            match result {
+                                Ok(Some(result)) => {
+                                    let _ = accept_sender.send(Ok(result)).await;
+                                }
+                                Ok(None) => {}
+                                Err(error) => {
+                                    let _ = accept_sender.send(Err(error)).await;
+                                }
                             }
-                            H2ProbeResult::Direct(stream) => {
-                                return Ok(AcceptResult::Tcp((SingBoxTcpStream::DirectWithPrefix(stream), address)));
-                            }
-                        }
+                        });
                     }
-                    AcceptResult::Tcp((stream, address)) => {
+                    Ok(AcceptResult::Tcp((stream, address))) => {
                         return Ok(AcceptResult::Tcp((SingBoxTcpStream::Direct(stream), address)));
                     }
-                    AcceptResult::Udp(stream) => return Ok(AcceptResult::Udp(SingBoxUdpStream::Direct(stream))),
+                    Ok(AcceptResult::Udp(stream)) => return Ok(AcceptResult::Udp(SingBoxUdpStream::Direct(stream))),
+                    Err(error) => {
+                        log::debug!("sing-box inner accept failed: {}", error);
+                        tokio::task::yield_now().await;
+                    }
                 },
+                result = async { self.accept_receiver.lock().await.recv().await } => {
+                    return result.ok_or_else(|| io::Error::new(io::ErrorKind::ConnectionAborted, "sing-box mux probe acceptor closed"))?;
+                }
                 result = async { self.receiver.lock().await.recv().await } => {
                     return result.ok_or_else(|| io::Error::new(io::ErrorKind::ConnectionAborted, "sing-box mux acceptor closed"));
                 }

@@ -590,6 +590,8 @@ download_bin() {
 
 generate_config() {
     local config_temp
+    local config_domain
+    local escaped_domain
     local escaped_path
     local escaped_secret
     echo -e "\n${INFO} 请选择您要部署的协议："
@@ -620,6 +622,16 @@ generate_config() {
 
     mkdir -p "${INSTALL_DIR}"
     config_temp=$(mktemp "${INSTALL_DIR}/config.toml.XXXXXX")
+    config_domain="${DOMAIN:-}"
+    if [ -z "${config_domain}" ] && [ -f "${DOMAIN_FILE}" ]; then
+        config_domain=$(tr -d '\r\n' <"${DOMAIN_FILE}")
+    fi
+    if ! is_valid_domain "${config_domain}"; then
+        echo -e "${ERROR} 未找到有效域名，无法生成 TLS SNI 配置。请先申请或安装证书。${PLAIN}"
+        rm -f -- "${config_temp}"
+        return 1
+    fi
+    escaped_domain=$(toml_escape "${config_domain}")
     escaped_path=$(toml_escape "${WSPATH}")
 
     local listen_addr="0.0.0.0"
@@ -639,6 +651,7 @@ log_level = "info"
 
 [tls]
 addr = "${listen_addr}:${PORT}"
+sni = "${escaped_domain}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
@@ -647,6 +660,8 @@ users = ["${UUID}"]
 
 [websocket]
 path = "${escaped_path}"
+keepalive_interval_secs = 30
+max_write_frame_size = 16384
 
 [fallback]
 page = "${INSTALL_DIR}/camouflage.html"
@@ -671,6 +686,7 @@ log_level = "info"
 
 [tls]
 addr = "${listen_addr}:${PORT}"
+sni = "${escaped_domain}"
 cert = "${CERT_DIR}/fullchain.cer"
 key = "${CERT_DIR}/private.key"
 
@@ -679,6 +695,8 @@ password = "${escaped_secret}"
 
 [websocket]
 path = "${escaped_path}"
+keepalive_interval_secs = 30
+max_write_frame_size = 16384
 
 [fallback]
 page = "${INSTALL_DIR}/camouflage.html"

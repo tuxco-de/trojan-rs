@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 const DEFAULT_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const DEFAULT_MUX_H2_PROBE_TIMEOUT_SECS: u64 = 1;
+type VlessAcceptResult<S> = AcceptResult<VlessTcpStream<S>, VlessUdpStream<VlessTcpStream<S>>>;
 
 fn default_handshake_timeout_secs() -> u64 {
     DEFAULT_HANDSHAKE_TIMEOUT_SECS
@@ -44,20 +45,15 @@ pub struct VlessMultiplexConfig {
 pub struct VlessAcceptor<T: ProxyAcceptor> {
     valid_users: Vec<[u8; 16]>,
     handshake_timeout: Duration,
-    mux_accept_tx:
-        mpsc::Sender<AcceptResult<VlessTcpStream<T::TS>, VlessUdpStream<VlessTcpStream<T::TS>>>>,
-    mux_accept_rx: Arc<
-        Mutex<
-            mpsc::Receiver<
-                AcceptResult<VlessTcpStream<T::TS>, VlessUdpStream<VlessTcpStream<T::TS>>>,
-            >,
-        >,
-    >,
+    accept_tx: mpsc::Sender<io::Result<VlessAcceptResult<T::TS>>>,
+    accept_rx: Arc<Mutex<mpsc::Receiver<io::Result<VlessAcceptResult<T::TS>>>>>,
+    mux_accept_tx: mpsc::Sender<VlessAcceptResult<T::TS>>,
+    mux_accept_rx: Arc<Mutex<mpsc::Receiver<VlessAcceptResult<T::TS>>>>,
     inner: T,
 }
 
 #[async_trait]
-impl<T: ProxyAcceptor> ProxyAcceptor for VlessAcceptor<T> {
+impl<T: ProxyAcceptor + 'static> ProxyAcceptor for VlessAcceptor<T> {
     type TS = VlessTcpStream<T::TS>;
     type US = VlessUdpStream<VlessTcpStream<T::TS>>;
 
@@ -65,40 +61,75 @@ impl<T: ProxyAcceptor> ProxyAcceptor for VlessAcceptor<T> {
         loop {
             tokio::select! {
                 result = async { self.mux_accept_rx.lock().await.recv().await } => {
-                    return result.ok_or_else(|| io::Error::new(io::ErrorKind::ConnectionAborted, "VLESS mux acceptor closed"));
+                    return result.map(Ok).unwrap_or_else(|| Err(io::Error::new(io::ErrorKind::ConnectionAborted, "VLESS mux acceptor closed")));
+                }
+                result = async { self.accept_rx.lock().await.recv().await } => {
+                    return result.ok_or_else(|| io::Error::new(io::ErrorKind::ConnectionAborted, "VLESS acceptor closed"))?;
                 }
                 result = self.inner.accept() => {
-                    let (mut stream, _) = result?.unwrap_tcp_with_addr();
-                    let header = timeout(
-                        self.handshake_timeout,
-                        RequestHeader::read_from(&mut stream, &self.valid_users),
-                    )
-                    .await
-                    .map_err(|_| new_error("request header timed out"))??;
-                    stream.write_all(&[VERSION, 0]).await?;
-                    stream.flush().await?;
-
-                    match header {
-                        RequestHeader::Tcp(address) => {
-                            log::info!("vless tcp stream {}", address);
-                            return Ok(AcceptResult::Tcp((VlessTcpStream::Direct(stream), address)));
+                    let (stream, _) = result?.unwrap_tcp_with_addr();
+                    let valid_users = self.valid_users.clone();
+                    let handshake_timeout = self.handshake_timeout;
+                    let accept_tx = self.accept_tx.clone();
+                    let mux_accept_tx = self.mux_accept_tx.clone();
+                    tokio::spawn(async move {
+                        match accept_vless_stream(stream, valid_users, handshake_timeout, mux_accept_tx).await {
+                            Ok(Some(result)) => {
+                                let _ = accept_tx.send(Ok(result)).await;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = accept_tx.send(Err(error)).await;
+                            }
                         }
-                        RequestHeader::Udp(address) => {
-                            log::info!("vless udp stream {}", address);
-                            return Ok(AcceptResult::Udp(VlessUdpStream::new(VlessTcpStream::Direct(stream), address)));
-                        }
-                        RequestHeader::Mux => {
-                            log::info!("vless mux.cool stream");
-                            let accept_tx = self.mux_accept_tx.clone();
-                            tokio::spawn(async move {
-                                if let Err(error) = serve_mux_cool(stream, accept_tx).await {
-                                    log::debug!("vless mux.cool session ended: {}", error);
-                                }
-                            });
-                        }
-                    }
+                    });
                 }
             }
+        }
+    }
+}
+
+async fn accept_vless_stream<S>(
+    mut stream: S,
+    valid_users: Vec<[u8; 16]>,
+    handshake_timeout: Duration,
+    mux_accept_tx: mpsc::Sender<VlessAcceptResult<S>>,
+) -> io::Result<Option<VlessAcceptResult<S>>>
+where
+    S: crate::protocol::ProxyTcpStream + 'static,
+{
+    let header = timeout(
+        handshake_timeout,
+        RequestHeader::read_from(&mut stream, &valid_users),
+    )
+    .await
+    .map_err(|_| new_error("request header timed out"))??;
+    stream.write_all(&[VERSION, 0]).await?;
+    stream.flush().await?;
+
+    match header {
+        RequestHeader::Tcp(address) => {
+            log::info!("vless tcp stream {}", address);
+            Ok(Some(AcceptResult::Tcp((
+                VlessTcpStream::Direct(stream),
+                address,
+            ))))
+        }
+        RequestHeader::Udp(address) => {
+            log::info!("vless udp stream {}", address);
+            Ok(Some(AcceptResult::Udp(VlessUdpStream::new(
+                VlessTcpStream::Direct(stream),
+                address,
+            ))))
+        }
+        RequestHeader::Mux => {
+            log::info!("vless mux.cool stream");
+            tokio::spawn(async move {
+                if let Err(error) = serve_mux_cool(stream, mux_accept_tx).await {
+                    log::debug!("vless mux.cool session ended: {}", error);
+                }
+            });
+            Ok(None)
         }
     }
 }
@@ -121,10 +152,13 @@ impl<T: ProxyAcceptor> VlessAcceptor<T> {
             }
             valid_users.push(bytes);
         }
+        let (accept_tx, accept_rx) = mpsc::channel(1024);
         let (mux_accept_tx, mux_accept_rx) = mpsc::channel(128);
         Ok(Self {
             valid_users,
             handshake_timeout: Duration::from_secs(config.handshake_timeout_secs),
+            accept_tx,
+            accept_rx: Arc::new(Mutex::new(accept_rx)),
             mux_accept_tx,
             mux_accept_rx: Arc::new(Mutex::new(mux_accept_rx)),
             inner,

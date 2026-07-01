@@ -114,8 +114,6 @@ impl RequestHeader {
             _ => Err(new_error("invalid command")),
         }
     }
-
-
 }
 
 /// ```plain

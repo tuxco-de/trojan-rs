@@ -16,6 +16,7 @@ use std::{
     time::Duration,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, ReadBuf};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::{timeout_at, Instant};
 use tokio_tungstenite::{
     accept_hdr_async_with_config,
@@ -203,79 +204,144 @@ pub struct WebSocketAcceptor<T: ProxyAcceptor> {
     websocket_options: WebSocketOptions,
     allow_raw: bool,
     fallback: Option<FallbackPage>,
+    accept_tx:
+        mpsc::Sender<io::Result<AcceptResult<TrojanGoWebSocketStream<T::TS>, DummyUdpStream>>>,
+    accept_rx: Arc<
+        Mutex<
+            mpsc::Receiver<
+                io::Result<AcceptResult<TrojanGoWebSocketStream<T::TS>, DummyUdpStream>>,
+            >,
+        >,
+    >,
     inner: T,
 }
 
 #[async_trait]
-impl<T: ProxyAcceptor> ProxyAcceptor for WebSocketAcceptor<T> {
+impl<T: ProxyAcceptor + 'static> ProxyAcceptor for WebSocketAcceptor<T> {
     type TS = TrojanGoWebSocketStream<T::TS>;
     type US = DummyUdpStream;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
         loop {
-            let (mut stream, addr) = self.inner.accept().await?.unwrap_tcp_with_addr();
-            let deadline = Instant::now() + self.handshake_timeout;
-            let request_head = timeout_at(
-                deadline,
-                read_request_head(&mut stream, self.max_handshake_size),
-            )
-            .await
-            .map_err(|_| new_error("websocket handshake timed out"))??;
-
-            let is_websocket = is_trojan_go_websocket_request_with_options(
-                &request_head,
-                self.path.as_ref(),
-                true,
-            );
-            if !is_websocket {
-                if !self.allow_raw {
-                    if let Some(ref fallback) = self.fallback {
-                        log::info!("serving fallback page to {}", addr);
-                        fallback.serve(stream, request_head);
-                        continue;
-                    }
-                    return Err(new_error("websocket upgrade required"));
+            tokio::select! {
+                result = async { self.accept_rx.lock().await.recv().await } => {
+                    return result.ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::ConnectionAborted, "websocket acceptor closed")
+                    })?;
                 }
-                let prefixed = PrefixedStream::new(request_head, stream);
-                return Ok(AcceptResult::Tcp((
-                    TrojanGoWebSocketStream::Raw(prefixed),
-                    addr,
-                )));
+                result = self.inner.accept() => {
+                    let (stream, addr) = result?.unwrap_tcp_with_addr();
+                    let path = Arc::clone(&self.path);
+                    let handshake_timeout = self.handshake_timeout;
+                    let max_handshake_size = self.max_handshake_size;
+                    let max_early_data = self.max_early_data;
+                    let early_data_header_name = self.early_data_header_name.clone();
+                    let websocket_config = self.websocket_config.clone();
+                    let websocket_options = self.websocket_options;
+                    let allow_raw = self.allow_raw;
+                    let fallback = self.fallback.clone();
+                    let accept_tx = self.accept_tx.clone();
+                    tokio::spawn(async move {
+                        match accept_websocket_stream(
+                            stream,
+                            addr,
+                            path,
+                            handshake_timeout,
+                            max_handshake_size,
+                            max_early_data,
+                            early_data_header_name,
+                            websocket_config,
+                            websocket_options,
+                            allow_raw,
+                            fallback,
+                        )
+                        .await
+                        {
+                            Ok(Some(result)) => {
+                                let _ = accept_tx.send(Ok(result)).await;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                let _ = accept_tx.send(Err(error)).await;
+                            }
+                        }
+                    });
+                }
             }
-            let early_data = extract_early_data(
-                &request_head,
-                self.path.as_ref(),
-                self.max_early_data,
-                self.early_data_header_name.as_deref(),
-            )?;
-
-            let prefixed = PrefixedStream::new(request_head, stream);
-            let stream = timeout_at(
-                deadline,
-                accept_hdr_async_with_config(
-                    prefixed,
-                    WebSocketCallback {
-                        path: Arc::clone(&self.path),
-                        allow_path_early_data: true,
-                        response_protocol: early_data.response_protocol.clone(),
-                    },
-                    Some(self.websocket_config),
-                ),
-            )
-            .await
-            .map_err(|_| new_error("websocket handshake timed out"))?
-            .map_err(new_error)?;
-            return Ok(AcceptResult::Tcp((
-                TrojanGoWebSocketStream::WebSocket(Box::new(BinaryWsStream::new_with_options(
-                    stream,
-                    early_data.payload,
-                    self.websocket_options.keepalive_interval_secs,
-                    self.websocket_options.max_write_frame_size,
-                ))),
-                addr,
-            )));
         }
     }
+}
+
+async fn accept_websocket_stream<S>(
+    mut stream: S,
+    addr: crate::protocol::Address,
+    path: Arc<str>,
+    handshake_timeout: Duration,
+    max_handshake_size: usize,
+    max_early_data: usize,
+    early_data_header_name: Option<Arc<str>>,
+    websocket_config: WebSocketConfig,
+    websocket_options: WebSocketOptions,
+    allow_raw: bool,
+    fallback: Option<FallbackPage>,
+) -> io::Result<Option<AcceptResult<TrojanGoWebSocketStream<S>, DummyUdpStream>>>
+where
+    S: ProxyTcpStream + 'static,
+{
+    let deadline = Instant::now() + handshake_timeout;
+    let request_head = timeout_at(deadline, read_request_head(&mut stream, max_handshake_size))
+        .await
+        .map_err(|_| new_error("websocket handshake timed out"))??;
+
+    let is_websocket =
+        is_trojan_go_websocket_request_with_options(&request_head, path.as_ref(), true);
+    if !is_websocket {
+        if !allow_raw {
+            if let Some(ref fallback) = fallback {
+                log::info!("serving fallback page to {}", addr);
+                fallback.serve(stream, request_head);
+                return Ok(None);
+            }
+            return Err(new_error("websocket upgrade required"));
+        }
+        let prefixed = PrefixedStream::new(request_head, stream);
+        return Ok(Some(AcceptResult::Tcp((
+            TrojanGoWebSocketStream::Raw(prefixed),
+            addr,
+        ))));
+    }
+    let early_data = extract_early_data(
+        &request_head,
+        path.as_ref(),
+        max_early_data,
+        early_data_header_name.as_deref(),
+    )?;
+
+    let prefixed = PrefixedStream::new(request_head, stream);
+    let stream = timeout_at(
+        deadline,
+        accept_hdr_async_with_config(
+            prefixed,
+            WebSocketCallback {
+                path,
+                allow_path_early_data: true,
+                response_protocol: early_data.response_protocol.clone(),
+            },
+            Some(websocket_config),
+        ),
+    )
+    .await
+    .map_err(|_| new_error("websocket handshake timed out"))?
+    .map_err(new_error)?;
+    Ok(Some(AcceptResult::Tcp((
+        TrojanGoWebSocketStream::WebSocket(Box::new(BinaryWsStream::new_with_options(
+            stream,
+            early_data.payload,
+            websocket_options.keepalive_interval_secs,
+            websocket_options.max_write_frame_size,
+        ))),
+        addr,
+    ))))
 }
 
 impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
@@ -304,6 +370,7 @@ impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
         validate_config(config)?;
         let fallback = FallbackPage::new(fallback_config)?;
         let websocket_config = config.options.tungstenite_config();
+        let (accept_tx, accept_rx) = mpsc::channel(1024);
         Ok(Self {
             inner,
             path: Arc::from(config.path.as_str()),
@@ -318,6 +385,8 @@ impl<T: ProxyAcceptor> WebSocketAcceptor<T> {
             websocket_options: config.options,
             allow_raw,
             fallback,
+            accept_tx,
+            accept_rx: Arc::new(Mutex::new(accept_rx)),
         })
     }
 }
@@ -625,15 +694,37 @@ fn is_valid_header_name(name: &str) -> bool {
 mod tests {
     use super::{
         is_trojan_go_websocket_request, read_request_head, BinaryWsStream, PrefixedStream,
-        WebSocketAcceptorConfig, WebSocketCallback,
+        WebSocketAcceptor, WebSocketAcceptorConfig, WebSocketCallback,
     };
+    use crate::protocol::{AcceptResult, Address, DummyUdpStream, ProxyAcceptor};
+    use async_trait::async_trait;
     use futures_util::SinkExt;
-    use std::sync::Arc;
-    use tokio::io::AsyncReadExt;
+    use std::{future::pending, io, sync::Arc};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::{mpsc, Mutex};
     use tokio_tungstenite::{
         accept_hdr_async_with_config, client_async,
         tungstenite::{protocol::WebSocketConfig, Message},
     };
+
+    struct ChannelAcceptor {
+        rx: Arc<Mutex<mpsc::Receiver<tokio::io::DuplexStream>>>,
+    }
+
+    #[async_trait]
+    impl ProxyAcceptor for ChannelAcceptor {
+        type TS = tokio::io::DuplexStream;
+        type US = DummyUdpStream;
+
+        async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
+            loop {
+                if let Some(stream) = self.rx.lock().await.recv().await {
+                    return Ok(AcceptResult::Tcp((stream, Address::new_dummy_address())));
+                }
+                pending::<()>().await;
+            }
+        }
+    }
 
     #[test]
     fn recognizes_trojan_go_websocket_handshake() {
@@ -697,5 +788,50 @@ mod tests {
 
         let (payload, ()) = tokio::join!(server, client);
         assert_eq!(&payload, b"payload");
+    }
+
+    #[tokio::test]
+    async fn slow_handshake_does_not_block_later_connections() {
+        let (tx, rx) = mpsc::channel(2);
+        let (slow_server, mut slow_client) = tokio::io::duplex(16 * 1024);
+        let (fast_server, fast_client) = tokio::io::duplex(16 * 1024);
+        tx.send(slow_server).await.unwrap();
+        tx.send(fast_server).await.unwrap();
+
+        let config: WebSocketAcceptorConfig =
+            toml::from_str("path = '/trojan'\nhandshake_timeout_secs = 10\n").unwrap();
+        let acceptor = WebSocketAcceptor::new_strict(
+            &config,
+            None,
+            ChannelAcceptor {
+                rx: Arc::new(Mutex::new(rx)),
+            },
+        )
+        .unwrap();
+
+        slow_client.write_all(b"GET ").await.unwrap();
+        let fast = async move {
+            let (mut websocket, _) = client_async("ws://example.com/trojan", fast_client)
+                .await
+                .unwrap();
+            websocket
+                .send(Message::Binary(bytes::Bytes::from_static(b"payload")))
+                .await
+                .unwrap();
+        };
+        let accepted = async {
+            tokio::time::timeout(std::time::Duration::from_millis(500), acceptor.accept())
+                .await
+                .expect("later websocket connection should not wait for slow handshake")
+                .unwrap()
+        };
+
+        let (accepted, ()) = tokio::join!(accepted, fast);
+        let (mut stream, _) = accepted.unwrap_tcp_with_addr();
+        let mut payload = [0u8; 7];
+        stream.read_exact(&mut payload).await.unwrap();
+        assert_eq!(&payload, b"payload");
+        drop(slow_client);
+        drop(tx);
     }
 }

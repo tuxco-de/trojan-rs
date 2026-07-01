@@ -1,10 +1,7 @@
 use crate::protocol::{
-    fallback::FallbackConfig,
-    mux::acceptor::MuxAcceptorConfig,
-    tls::acceptor::TrojanTlsAcceptorConfig,
-    trojan::acceptor::TrojanAcceptorConfig,
-    vless::acceptor::VlessAcceptorConfig,
-    websocket::acceptor::WebSocketAcceptorConfig,
+    fallback::FallbackConfig, mux::acceptor::MuxAcceptorConfig,
+    tls::acceptor::TrojanTlsAcceptorConfig, trojan::acceptor::TrojanAcceptorConfig,
+    vless::acceptor::VlessAcceptorConfig, websocket::acceptor::WebSocketAcceptorConfig,
 };
 use serde::Deserialize;
 

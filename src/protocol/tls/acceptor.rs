@@ -15,6 +15,7 @@ use std::{
 };
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{mpsc, Mutex};
 use tokio::time::timeout;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
@@ -33,6 +34,9 @@ pub struct TrojanTlsAcceptor {
     tls_acceptor: TlsAcceptor,
     tcp_listener: TcpListener,
     handshake_timeout: Duration,
+    accept_tx: mpsc::Sender<io::Result<AcceptResult<TlsStream<TcpStream>, DummyUdpStream>>>,
+    accept_rx:
+        Arc<Mutex<mpsc::Receiver<io::Result<AcceptResult<TlsStream<TcpStream>, DummyUdpStream>>>>>,
 }
 
 impl ProxyTcpStream for TlsStream<TcpStream> {}
@@ -94,16 +98,36 @@ impl ProxyAcceptor for TrojanTlsAcceptor {
     type US = DummyUdpStream;
 
     async fn accept(&self) -> io::Result<AcceptResult<Self::TS, Self::US>> {
-        let (stream, addr) = self.tcp_listener.accept().await?;
-        log::info!("tcp connection from {}", addr);
-        if let Err(e) = stream.set_nodelay(true) {
-            log::debug!("failed to enable TCP_NODELAY for inbound {}: {}", addr, e);
+        loop {
+            tokio::select! {
+                result = async { self.accept_rx.lock().await.recv().await } => {
+                    return result.ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::ConnectionAborted, "TLS acceptor closed")
+                    })?;
+                }
+                result = self.tcp_listener.accept() => {
+                    let (stream, addr) = result?;
+                    log::info!("tcp connection from {}", addr);
+                    if let Err(e) = stream.set_nodelay(true) {
+                        log::debug!("failed to enable TCP_NODELAY for inbound {}: {}", addr, e);
+                    }
+                    let tls_acceptor = self.tls_acceptor.clone();
+                    let handshake_timeout = self.handshake_timeout;
+                    let accept_tx = self.accept_tx.clone();
+                    tokio::spawn(async move {
+                        let result = async {
+                            let stream = timeout(handshake_timeout, tls_acceptor.accept(stream))
+                                .await
+                                .map_err(|_| new_error("TLS handshake timed out"))?
+                                .map_err(new_error)?;
+                            Ok(AcceptResult::Tcp((stream, Address::SocketAddress(addr))))
+                        }
+                        .await;
+                        let _ = accept_tx.send(result).await;
+                    });
+                }
+            }
         }
-        let stream = timeout(self.handshake_timeout, self.tls_acceptor.accept(stream))
-            .await
-            .map_err(|_| new_error("TLS handshake timed out"))?
-            .map_err(new_error)?;
-        Ok(AcceptResult::Tcp((stream, Address::SocketAddress(addr))))
     }
 }
 
@@ -146,10 +170,13 @@ impl TrojanTlsAcceptor {
         };
 
         let tls_acceptor = TlsAcceptor::from(Arc::new(server_config));
+        let (accept_tx, accept_rx) = mpsc::channel(1024);
         Ok(Self {
             tcp_listener,
             tls_acceptor,
             handshake_timeout: Duration::from_secs(config.handshake_timeout_secs),
+            accept_tx,
+            accept_rx: Arc::new(Mutex::new(accept_rx)),
         })
     }
 }

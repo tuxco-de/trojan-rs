@@ -45,8 +45,6 @@ pub trait ProxyUdpStream: Send + Unpin {
     async fn close(self) -> io::Result<()>;
 }
 
-
-
 pub enum AcceptResult<T: ProxyTcpStream, U: ProxyUdpStream> {
     Tcp((T, Address)),
     Udp(U),

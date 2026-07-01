@@ -41,6 +41,8 @@ page = "config/camouflage.html"
 # max_message_size = 1048576
 # max_frame_size = 1048576
 # max_write_buffer_size = 2097152
+# max_write_frame_size = 16384
+# keepalive_interval_secs = 30
 
 # optional
 # [mux]
