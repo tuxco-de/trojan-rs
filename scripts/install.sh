@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="1.3.1"
+SCRIPT_VERSION="1.3.2"
 TROJAN_RS_VERSION="latest"
 
 # ---- 字体颜色定义 ----
@@ -434,6 +434,18 @@ issue_cert() {
     fi
 }
 
+camouflage_page_is_valid() {
+    [ -s "$1" ] && grep -qi '<html' "$1"
+}
+
+download_camouflage_page() {
+    local destination=$1
+
+    curl --fail --silent --show-error --location --retry 3 \
+        "https://raw.githubusercontent.com/${GITHUB_REPO}/main/config/camouflage.html" \
+        -o "${destination}"
+}
+
 deploy_camouflage() {
     local source_file=""
     local temp_file
@@ -445,26 +457,96 @@ deploy_camouflage() {
     fi
 
     mkdir -p "${INSTALL_DIR}"
+    temp_file=$(mktemp "${INSTALL_DIR}/camouflage.html.XXXXXX")
     if [ -n "${source_file}" ]; then
-        install -m 0644 "${source_file}" "${INSTALL_DIR}/camouflage.html"
+        install -m 0600 "${source_file}" "${temp_file}"
     else
-        temp_file=$(mktemp)
-        if ! curl --fail --silent --show-error --location --retry 3 \
-            "https://raw.githubusercontent.com/${GITHUB_REPO}/main/config/camouflage.html" \
-            -o "${temp_file}"; then
+        if ! download_camouflage_page "${temp_file}"; then
             rm -f "${temp_file}"
             echo -e "${ERROR} 无法下载伪装页面。${PLAIN}"
             return 1
         fi
-        if [ ! -s "${temp_file}" ] || ! grep -qi '<html' "${temp_file}"; then
-            rm -f "${temp_file}"
-            echo -e "${ERROR} 下载的伪装页面内容无效。${PLAIN}"
+    fi
+    if ! camouflage_page_is_valid "${temp_file}"; then
+        rm -f "${temp_file}"
+        echo -e "${ERROR} 伪装页面内容无效。${PLAIN}"
+        return 1
+    fi
+    chmod 0644 "${temp_file}"
+    mv -f "${temp_file}" "${INSTALL_DIR}/camouflage.html"
+    echo -e "${SUCCESS} 伪装页面已部署至 ${INSTALL_DIR}/camouflage.html${PLAIN}"
+}
+
+update_camouflage_page() {
+    local page_file="${INSTALL_DIR}/camouflage.html"
+    local temp_file
+    local backup_file=""
+    local had_page=false
+    local was_active=false
+
+    safe_clear
+    print_banner
+    echo -e " ${CYAN}=== 更新伪装页面 ===${PLAIN}\n"
+
+    if [ ! -f "${CONFIG_FILE}" ]; then
+        echo -e "${ERROR} 未检测到已安装的 trojan-rs，请先执行全新安装。${PLAIN}"
+        return 1
+    fi
+    if ! command_exists curl; then
+        echo -e "${ERROR} 未找到 curl，无法下载最新伪装页面。${PLAIN}"
+        return 1
+    fi
+
+    mkdir -p "${INSTALL_DIR}"
+    temp_file=$(mktemp "${INSTALL_DIR}/camouflage.html.XXXXXX")
+    echo -e "${INFO} 正在下载最新伪装页面...${PLAIN}"
+    if ! download_camouflage_page "${temp_file}"; then
+        rm -f "${temp_file}"
+        echo -e "${ERROR} 无法下载伪装页面，当前页面未更改。${PLAIN}"
+        return 1
+    fi
+    if ! camouflage_page_is_valid "${temp_file}"; then
+        rm -f "${temp_file}"
+        echo -e "${ERROR} 下载的伪装页面内容无效，当前页面未更改。${PLAIN}"
+        return 1
+    fi
+    if [ -f "${page_file}" ] && cmp -s "${temp_file}" "${page_file}"; then
+        rm -f "${temp_file}"
+        echo -e "${SUCCESS} 当前伪装页面已经是最新版本。${PLAIN}"
+        return 0
+    fi
+
+    if [ -f "${page_file}" ]; then
+        backup_file=$(mktemp)
+        install -m 0644 "${page_file}" "${backup_file}"
+        had_page=true
+    fi
+    if svc_is_active 2>/dev/null; then
+        was_active=true
+    fi
+
+    chmod 0644 "${temp_file}"
+    mv -f "${temp_file}" "${page_file}"
+
+    if ${was_active}; then
+        echo -e "${INFO} 正在重启服务以加载新页面...${PLAIN}"
+        if ! restart_service; then
+            echo -e "${WARN} 新页面加载失败，正在恢复原页面。${PLAIN}"
+            if ${had_page}; then
+                install -m 0644 "${backup_file}" "${page_file}"
+            else
+                rm -f "${page_file}"
+            fi
+            restart_service || true
+            rm -f "${backup_file}"
             return 1
         fi
-        install -m 0644 "${temp_file}" "${INSTALL_DIR}/camouflage.html"
-        rm -f "${temp_file}"
+    else
+        echo -e "${INFO} 服务当前未运行，新页面将在下次启动时加载。${PLAIN}"
     fi
-    echo -e "${SUCCESS} 伪装页面已部署至 ${INSTALL_DIR}/camouflage.html${PLAIN}"
+
+    rm -f "${backup_file}"
+    echo -e "${SUCCESS} 伪装页面更新完成！${PLAIN}"
 }
 
 diagnose_binary_failure() {
@@ -1178,9 +1260,10 @@ menu() {
         echo -e " ${CYAN}5.${PLAIN} 彻底卸载"
         echo -e " ${CYAN}6.${PLAIN} 生成 Clash 节点配置 (JSON)"
         echo -e " ${CYAN}7.${PLAIN} 仅更新核心二进制文件"
+        echo -e " ${CYAN}8.${PLAIN} 更新伪装页面"
         echo -e " ${CYAN}0.${PLAIN} 退出脚本"
         echo -e "${BLUE}========================================================================${PLAIN}"
-        echo -ne "${CYAN}请输入选择 [0-7]: ${PLAIN}"
+        echo -ne "${CYAN}请输入选择 [0-8]: ${PLAIN}"
         read -r CHOICE
         case "${CHOICE}" in
             1) install_trojan; press_any_key ;;
@@ -1190,6 +1273,10 @@ menu() {
             5) uninstall; press_any_key ;;
             6) share_node; press_any_key ;;
             7) update_bin_only; press_any_key ;;
+            8)
+                update_camouflage_page || true
+                press_any_key
+                ;;
             0) exit 0 ;;
             *) echo -e "${RED}输入无效，请重新输入。${PLAIN}"; sleep 1 ;;
         esac

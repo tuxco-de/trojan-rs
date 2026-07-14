@@ -72,6 +72,7 @@ if [ -z "${MSYSTEM:-}" ]; then
     assert_fails certificate_is_usable other.example.com
 fi
 
+printf '%s\n' 'example.com' >"${DOMAIN_FILE}"
 generate_config >/dev/null <<'EOF'
 1
 443
@@ -83,7 +84,6 @@ grep -Eq 'password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
 grep -Eq 'dashboard_password = "[0-9a-f]{32}"' "${CONFIG_FILE}"
 grep -q 'path = "/ws"' "${CONFIG_FILE}"
 
-printf '%s\n' 'example.com' >"${DOMAIN_FILE}"
 share_node >"${TEST_ROOT}/trojan-node.json" <<'EOF'
 
 EOF
@@ -112,8 +112,10 @@ EOF
 chmod +x "${TEST_ROOT}/package/trojan-rs-server"
 tar -czf "${TEST_ROOT}/release.tar.gz" -C "${TEST_ROOT}/package" trojan-rs-server
 FIXTURE_ARCHIVE="${TEST_ROOT}/release.tar.gz"
+CAMOUFLAGE_FIXTURE="${TEST_ROOT}/camouflage-fixture.html"
 CURL_LOG="${TEST_ROOT}/curl.log"
 CURL_FAIL_PATTERN=""
+printf '%s\n' '<html><body>updated camouflage page</body></html>' >"${CAMOUFLAGE_FIXTURE}"
 
 curl() {
     local output=""
@@ -137,7 +139,10 @@ curl() {
     if [ -n "${CURL_FAIL_PATTERN}" ] && [[ "${url}" == *"${CURL_FAIL_PATTERN}"* ]]; then
         return 22
     fi
-    cp "${FIXTURE_ARCHIVE}" "${output}"
+    case "${url}" in
+        */config/camouflage.html) cp "${CAMOUFLAGE_FIXTURE}" "${output}" ;;
+        *) cp "${FIXTURE_ARCHIVE}" "${output}" ;;
+    esac
 }
 
 uname() {
@@ -157,5 +162,41 @@ test -x "${BIN_FILE}"
 [[ "$("${BIN_FILE}" --version)" == 'trojan-rs-test 1.0.0' ]]
 grep -q 'trojan-rs-server-linux-amd64.tar.gz' "${CURL_LOG}"
 grep -q 'trojan-rs-server-linux-musl-amd64.tar.gz' "${CURL_LOG}"
+
+svc_is_active() {
+    return 1
+}
+update_camouflage_page >/dev/null
+grep -q 'updated camouflage page' "${INSTALL_DIR}/camouflage.html"
+grep -q '/config/camouflage.html' "${CURL_LOG}"
+
+cp "${INSTALL_DIR}/camouflage.html" "${TEST_ROOT}/expected-camouflage.html"
+printf '%s\n' 'not an html page' >"${CAMOUFLAGE_FIXTURE}"
+assert_fails update_camouflage_page >/dev/null
+cmp -s "${TEST_ROOT}/expected-camouflage.html" "${INSTALL_DIR}/camouflage.html"
+
+printf '%s\n' '<html><body>restarted camouflage page</body></html>' >"${CAMOUFLAGE_FIXTURE}"
+RESTART_CALLS=0
+svc_is_active() {
+    return 0
+}
+restart_service() {
+    RESTART_CALLS=$((RESTART_CALLS + 1))
+    return 1
+}
+assert_fails update_camouflage_page >/dev/null
+[[ ${RESTART_CALLS} -eq 2 ]]
+cmp -s "${TEST_ROOT}/expected-camouflage.html" "${INSTALL_DIR}/camouflage.html"
+
+restart_service() {
+    RESTART_CALLS=$((RESTART_CALLS + 1))
+    return 0
+}
+update_camouflage_page >/dev/null
+[[ ${RESTART_CALLS} -eq 3 ]]
+grep -q 'restarted camouflage page' "${INSTALL_DIR}/camouflage.html"
+
+update_camouflage_page >/dev/null
+[[ ${RESTART_CALLS} -eq 3 ]]
 
 echo "install script tests passed"

@@ -221,7 +221,7 @@ cargo build --release
 
 ## 一键部署脚本
 
-仓库包含 [`scripts/install.sh`](scripts/install.sh)，支持使用 systemd 或 OpenRC 管理服务。
+仓库包含 [`scripts/install.sh`](scripts/install.sh)，支持使用 systemd 或 OpenRC 管理服务。安装完成后可通过主菜单单独更新伪装页面；脚本会校验下载内容，并在服务重新加载失败时恢复原页面。
 
 ```shell
 wget https://raw.githubusercontent.com/tuxco-de/trojan-rs/main/scripts/install.sh
